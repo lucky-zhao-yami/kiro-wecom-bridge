@@ -101,6 +101,7 @@ class Channel:
         chatid = body.get("chatid", "")
         userid = body.get("from", {}).get("userid", "unknown")
         msgtype = body.get("msgtype", "")
+        log.info("收到消息 req=%s chatid=%s userid=%s type=%s body_keys=%s", req_id, chatid, userid, msgtype, list(body.keys()))
 
         if msgtype != "text":
             await self.ws.send_stream(req_id, uuid.uuid4().hex[:16], "暂不支持该消息类型，请发送文本消息。", finish=True)
@@ -117,7 +118,6 @@ class Channel:
         text = f"[{userid}]: {text}"  # FR-5: 携带用户标识
 
         stream_id = uuid.uuid4().hex[:16]
-        await self.ws.send_stream(req_id, stream_id, "🤔 正在思考...", finish=False)
         asyncio.create_task(self._process_and_reply(req_id, stream_id, chatid, text))
 
     async def _process_and_reply(self, req_id: str, stream_id: str, chatid: str, text: str):
