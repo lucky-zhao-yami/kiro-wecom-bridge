@@ -75,17 +75,50 @@ class KiroProcess:
         # session load or new
         await self._create_or_load_session()
 
+    async def _restart_proc(self):
+        """杀掉当前进程并重新启动（不含 session 逻辑）"""
+        if self._reader_task and not self._reader_task.done():
+            self._reader_task.cancel()
+        if self._proc and self._proc.returncode is None:
+            self._proc.terminate()
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=3)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                self._proc.kill()
+                await self._proc.wait()
+        self._pending.clear()
+        self._msg_id = 0
+        cmd = ["kiro-cli", "acp", "--trust-all-tools"]
+        if self._agent:
+            cmd += ["--agent", self._agent]
+        self._proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self._session_dir,
+        )
+        self._reader_task = asyncio.create_task(self._reader_loop())
+        log.info("KiroProcess 重启 chatid=%s pid=%d", self._chatid, self._proc.pid)
+        await self._send_rpc_and_wait("initialize", {
+            "protocolVersion": 1,
+            "clientCapabilities": {},
+            "clientInfo": {"name": "wecom-bridge", "version": "1.0"},
+        })
+
     async def _create_or_load_session(self):
         saved_id = _load_session_id(self._session_dir)
         if saved_id:
             try:
-                result = await self._send_rpc_and_wait("session/load", {"sessionId": saved_id})
+                result = await self._send_rpc_and_wait("session/load", {"sessionId": saved_id}, timeout=15)
                 if isinstance(result, dict) and "error" not in result:
                     self._session_id = saved_id
                     log.info("session/load 成功 chatid=%s sid=%s", self._chatid, saved_id)
                     return
             except Exception as e:
-                log.warning("session/load 失败 chatid=%s: %s, 创建新 session", self._chatid, e)
+                log.warning("session/load 失败 chatid=%s: %s, 重启进程创建新 session", self._chatid, e)
+                # session/load 可能导致 ACP 进程卡死，重启进程
+                await self._restart_proc()
 
         result = await self._send_rpc_and_wait("session/new", {
             "cwd": self._cwd,
@@ -189,7 +222,7 @@ class KiroProcess:
             self._reader_task.cancel()
         if self._proc and self._proc.returncode is None:
             try:
-                self._proc.stdin.close()
+                self._proc.terminate()
                 await asyncio.wait_for(self._proc.wait(), timeout=5)
             except (asyncio.TimeoutError, ProcessLookupError):
                 self._proc.kill()
