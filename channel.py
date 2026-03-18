@@ -9,11 +9,11 @@ log = logging.getLogger(__name__)
 DEFAULT_WELCOME = "👋 你好！我是 Kiro AI 助手，有什么可以帮你的？"
 WORK_DIR = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
 STREAM_SEGMENT_LIMIT = 1500
-FLUSH_INTERVAL = 0.3  # 攒 0.3s 再发一次，避免企微版本冲突
+FLUSH_INTERVAL = 0.3
 
 
 class StreamSegmenter:
-    """流式输出分段：带缓冲节流，累计超阈值时 finish 当前 stream 开新 stream"""
+    """流式输出分段：企微 stream 是替换式，每次发当前 segment 的累计全文"""
 
     def __init__(self, ws: WsClient, req_id: str, stream_id: str,
                  limit: int = STREAM_SEGMENT_LIMIT, flush_interval: float = FLUSH_INTERVAL):
@@ -22,15 +22,14 @@ class StreamSegmenter:
         self._stream_id = stream_id
         self._limit = limit
         self._flush_interval = flush_interval
-        self._seg_len = 0
-        self._buf = ""
+        self._seg_text = ""  # 当前 segment 已发送的累计文本
+        self._buf = ""       # 待发送的增量缓冲
         self._finished = False
         self._flush_task: asyncio.Task | None = None
 
     async def feed(self, delta: str):
         self._buf += delta
-        # 缓冲区超过阈值剩余空间时立刻 flush，否则等定时器
-        if self._seg_len + len(self._buf) >= self._limit:
+        if len(self._seg_text) + len(self._buf) >= self._limit:
             await self._flush()
         elif not self._flush_task or self._flush_task.done():
             self._flush_task = asyncio.create_task(self._delayed_flush())
@@ -44,31 +43,34 @@ class StreamSegmenter:
         if self._flush_task and not self._flush_task.done():
             self._flush_task.cancel()
         while self._buf:
-            space = self._limit - self._seg_len
+            space = self._limit - len(self._seg_text)
             if len(self._buf) <= space:
-                await self._ws.send_stream(self._req_id, self._stream_id, self._buf, finish=False)
-                self._seg_len += len(self._buf)
+                # 还没超限，追加到 seg_text 并发送累计全文
+                self._seg_text += self._buf
                 self._buf = ""
+                await self._ws.send_stream(self._req_id, self._stream_id, self._seg_text, finish=False)
             else:
+                # 超限，在换行处切割，finish 当前 segment
                 cut = space
                 nl = self._buf.rfind("\n", 0, space)
                 if nl > 0:
                     cut = nl + 1
                 part = self._buf[:cut]
-                if part:
-                    await self._ws.send_stream(self._req_id, self._stream_id, part, finish=False)
-                await self._ws.send_stream(self._req_id, self._stream_id, "", finish=True)
-                self._stream_id = uuid.uuid4().hex[:16]
-                self._seg_len = 0
+                self._seg_text += part
                 self._buf = self._buf[cut:]
+                # finish 当前 segment（发累计全文 + finish）
+                await self._ws.send_stream(self._req_id, self._stream_id, self._seg_text, finish=True)
+                # 开新 segment
+                self._stream_id = uuid.uuid4().hex[:16]
+                self._seg_text = ""
 
     async def finish(self):
         if self._flush_task and not self._flush_task.done():
             self._flush_task.cancel()
         if self._buf:
             await self._flush()
-        if not self._finished and self._seg_len > 0:
-            await self._ws.send_stream(self._req_id, self._stream_id, "", finish=True)
+        if not self._finished and self._seg_text:
+            await self._ws.send_stream(self._req_id, self._stream_id, self._seg_text, finish=True)
             self._finished = True
 
 
@@ -102,7 +104,7 @@ class Channel:
         userid = body.get("from", {}).get("userid", "unknown")
         msgtype = body.get("msgtype", "")
         if not chatid:
-            chatid = f"dm_{userid}"  # 单聊用 userid 做隔离 key
+            chatid = f"dm_{userid}"
         log.info("收到消息 req=%s chatid=%s userid=%s type=%s", req_id, chatid, userid, msgtype)
 
         if msgtype != "text":
@@ -117,7 +119,7 @@ class Channel:
             parts = text.split(None, 1)
             text = parts[1] if len(parts) > 1 else text
 
-        text = f"[{userid}]: {text}"  # FR-5: 携带用户标识
+        text = f"[{userid}]: {text}"
 
         stream_id = uuid.uuid4().hex[:16]
         asyncio.create_task(self._process_and_reply(req_id, stream_id, chatid, text))
