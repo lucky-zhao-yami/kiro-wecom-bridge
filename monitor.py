@@ -1,4 +1,4 @@
-"""Grafana Dashboard 轮询监控 — 复刻 so-webhook 逻辑"""
+"""Grafana Dashboard 轮询监控 — 告警通过 ChannelManager 发送"""
 import asyncio, json, logging, os, time
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP

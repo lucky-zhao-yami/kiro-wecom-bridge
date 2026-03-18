@@ -1,0 +1,12 @@
+[
+  {
+    "bot_id": "YOUR_BOT_ID",
+    "secret": "YOUR_SECRET",
+    "welcome_msg": "👋 你好！我是 Kiro AI 助手，有什么可以帮你的？",
+    "chats": {
+      "default": {"agent": null, "cwd": "/path/to/workspace"},
+      "CHAT_ID_DEV": {"agent": null, "cwd": "/path/to/workspace"},
+      "CHAT_ID_ALERT": {"agent": "alert-advisor", "cwd": "/path/to/workspace", "alert": true}
+    }
+  }
+]
