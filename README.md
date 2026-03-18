@@ -150,6 +150,8 @@ cp channels.example.json channels.json
 
 ### 7. 启动
 
+**方式一：直接启动**
+
 ```bash
 # 前台启动
 ./start.sh
@@ -163,6 +165,25 @@ nohup ./start.sh >> /tmp/wecom-bridge.log 2>&1 &
 # 查看日志
 tail -f /tmp/wecom-bridge.log
 ```
+
+**方式二：systemd 托管（推荐）**
+
+```bash
+# 安装 service（按实际路径修改 service 文件中的 User 和 WorkingDirectory）
+sudo cp kiro-wecom-bridge.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# 启动 & 开机自启
+sudo systemctl enable --now kiro-wecom-bridge
+
+# 常用命令
+sudo systemctl status kiro-wecom-bridge   # 查看状态
+sudo systemctl restart kiro-wecom-bridge  # 重启
+sudo systemctl stop kiro-wecom-bridge     # 停止
+journalctl -u kiro-wecom-bridge -f        # 查看日志
+```
+
+systemd 会自动处理：崩溃重启（5 秒后）、开机自启、日志管理（journalctl）。
 
 ## 项目结构
 
