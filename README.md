@@ -39,22 +39,41 @@ kiro-cli acp --trust-all-tools
 在 Windows PowerShell (管理员) 中执行：
 
 ```powershell
-# 安装 WSL（默认 Ubuntu）
-wsl --install
+# 查看可用的 Linux 发行版
+wsl --list --online
+
+# 安装指定发行版（推荐 Ubuntu 24.04）
+wsl --install -d Ubuntu-24.04
 
 # 安装完成后重启电脑，然后打开 Ubuntu 终端设置用户名和密码
 ```
 
-如果已安装 WSL 但需要更新：
+如果网络问题导致下载失败，可以手动安装：
 
 ```powershell
-wsl --update
+# 方法一：从微软商店安装
+# 打开 Microsoft Store，搜索 "Ubuntu 24.04"，点击安装
+
+# 方法二：手动下载离线包
+# 1. 浏览器访问 https://aka.ms/wslubuntu2404 下载 .appx 文件
+# 2. 双击安装，或用 PowerShell：
+Add-AppxPackage .\Ubuntu_2404.appx
+
+# 方法三：导入已有的 tar 镜像
+# 如果同事已经配好了环境，可以导出给你：
+#   导出端: wsl --export Ubuntu-24.04 ubuntu-backup.tar
+#   导入端:
+wsl --import Ubuntu-24.04 D:\wsl\Ubuntu-24.04 .\ubuntu-backup.tar
 ```
 
-安装完成后进入 WSL：
+WSL 常用管理命令：
 
 ```powershell
-wsl
+wsl --update                          # 更新 WSL 内核
+wsl --list --verbose                  # 查看已安装的发行版和状态
+wsl --set-default Ubuntu-24.04        # 设置默认发行版
+wsl -d Ubuntu-24.04                   # 进入指定发行版
+wsl --shutdown                        # 关闭所有 WSL 实例
 ```
 
 ### 2. WSL 基础配置
