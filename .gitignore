@@ -3,3 +3,4 @@
 .env
 __pycache__/
 channels.json
+.venv/

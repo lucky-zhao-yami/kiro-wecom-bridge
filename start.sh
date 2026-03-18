@@ -20,10 +20,15 @@ if ! command -v kiro-cli &>/dev/null; then
     exit 1
 fi
 
+# 激活虚拟环境
+if [ -f .venv/bin/activate ]; then
+    source .venv/bin/activate
+fi
+
 # 检查 Python 依赖
 python3 -c "import fastapi, uvicorn, dotenv, websockets" 2>/dev/null || {
-    echo "📦 安装依赖 ..."
-    pip install --break-system-packages -q -r requirements.txt
+    echo "❌ 依赖缺失，请先运行: bash install.sh"
+    exit 1
 }
 
 echo "🚀 启动 kiro-wecom-bridge ..."

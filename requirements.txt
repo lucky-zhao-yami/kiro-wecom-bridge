@@ -2,5 +2,3 @@ fastapi
 uvicorn[standard]
 python-dotenv
 websockets
-sentence-transformers
-sqlite-vec

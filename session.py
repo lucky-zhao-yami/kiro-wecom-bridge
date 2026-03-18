@@ -45,6 +45,60 @@ def _save_summary(session_dir: str, text: str):
         log.error("保存摘要失败: %s", e)
 
 
+def _extract_summary(reply: str) -> str:
+    """从回收回复中提取总结部分，兼容多种标题格式"""
+    import re
+    # 匹配 # 总结 / ## 总结 / ### 总结
+    m = re.search(r"^#{1,3}\s*总结\s*$", reply, re.MULTILINE)
+    if m:
+        after = reply[m.end():].strip()
+        # 截断到下一个 # 标题（跳过首行避免 start=0）
+        first_nl = after.find("\n")
+        if first_nl > 0:
+            m2 = re.search(r"^#{1,3}\s+", after[first_nl:], re.MULTILINE)
+            return after[:first_nl + m2.start()].strip() if m2 else after[:1000]
+        return after[:1000]
+    return reply[:500]
+
+
+def _append_history(session_dir: str, user: str, assistant: str):
+    """追加对话记录到 JSONL 文件"""
+    try:
+        os.makedirs(session_dir, exist_ok=True)
+        with open(os.path.join(session_dir, HISTORY_FILE), "a") as f:
+            f.write(json.dumps({"user": user, "assistant": assistant, "ts": int(time.time())}, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.error("追加历史失败: %s", e)
+
+
+def _load_history(session_dir: str, max_turns: int = 20) -> list[dict]:
+    """从 JSONL 加载最近的对话历史"""
+    p = os.path.join(session_dir, HISTORY_FILE)
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p, "r") as f:
+            lines = f.readlines()
+        result = []
+        for line in lines[-max_turns:]:
+            try:
+                result.append(json.loads(line.strip()))
+            except Exception:
+                pass
+        return result
+    except Exception:
+        return []
+
+
+def _clear_history(session_dir: str):
+    p = os.path.join(session_dir, HISTORY_FILE)
+    try:
+        if os.path.isfile(p):
+            os.remove(p)
+    except Exception:
+        pass
+
+
 def _format_history(history: list[dict]) -> str:
     lines = []
     for h in history:
@@ -150,16 +204,19 @@ class KiroProcess:
                     if on_chunk:
                         await on_chunk(chunk)
                 self._last_active = time.monotonic()
-                # 记录对话历史
+                # 记录对话历史（内存 + 磁盘）
                 self._history.append({"user": text, "assistant": self._full_text})
+                _append_history(self._session_dir, text, self._full_text)
                 return self._full_text
             except asyncio.TimeoutError:
                 log.warning("prompt 超时 chatid=%s", self._chatid)
                 self._history.append({"user": text, "assistant": ""})
+                _append_history(self._session_dir, text, "")
                 return "⏰ 回复超时，请稍后重试"
             except RuntimeError as e:
                 log.error("ACP 进程异常 chatid=%s: %s", self._chatid, e)
                 self._history.append({"user": text, "assistant": ""})
+                _append_history(self._session_dir, text, "")
                 return f"❌ ACP 进程异常: {e}"
             finally:
                 self._pending.pop(mid, None)
@@ -211,8 +268,11 @@ class KiroProcess:
             await self._chunk_queue.put(None)
 
     async def stop(self):
-        history = self._history.copy()
-        # 先终止主进程
+        # 合并内存+磁盘历史
+        history = _load_history(self._session_dir)
+        if not history:
+            history = self._history.copy()
+        # 终止主进程
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
         if self._proc and self._proc.returncode is None:
@@ -318,18 +378,9 @@ async def _recycle_memory(chatid: str, session_dir: str, cwd: str, history: list
 
         # 提取总结部分保存
         if reply:
-            # 取 "## 总结" 之后的内容作为摘要
-            if "## 总结" in reply:
-                summary = reply.split("## 总结", 1)[1].strip()
-                # 如果后面还有其他 ## 标题，截断
-                for marker in ["## 知识提取", "## "]:
-                    if marker in summary and marker != summary[:len(marker)]:
-                        idx = summary.index(marker, 1) if summary.startswith(marker) else summary.index(marker)
-                        summary = summary[:idx].strip()
-                        break
-            else:
-                summary = reply[:500]
+            summary = _extract_summary(reply)
             _save_summary(session_dir, summary)
+            _clear_history(session_dir)
             log.info("回收完成 chatid=%s summary_len=%d", chatid, len(summary))
 
         # 终止临时进程

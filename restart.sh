@@ -9,7 +9,7 @@ port_pid=$(lsof -ti :8900 2>/dev/null || true)
 [ -n "$port_pid" ] && echo "$port_pid" | xargs kill 2>/dev/null && echo "  killed main (pid=$port_pid)"
 
 # 杀残留 kiro-cli acp 子进程
-for p in $(pgrep -f "kiro-cli-chat acp" 2>/dev/null || true); do
+for p in $(pgrep -f "kiro-cli acp" 2>/dev/null || true); do
     kill "$p" 2>/dev/null && echo "  killed acp (pid=$p)"
 done
 

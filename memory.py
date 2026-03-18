@@ -1,4 +1,4 @@
-"""L3 知识图谱：SQLite 实体关系 + sqlite-vec 向量检索"""
+"""L3 知识图谱：SQLite 实体关系 + FTS5 全文检索 + sqlite-vec 向量检索"""
 import json, logging, os, sqlite3, time
 
 log = logging.getLogger(__name__)
@@ -15,16 +15,28 @@ def _get_model():
     return _model
 
 
-def _embed(text: str) -> list[float]:
-    return _get_model().encode(text).tolist()
+def _embed(text: str) -> bytes:
+    import struct
+    vec = _get_model().encode(text).tolist()
+    return struct.pack(f"{len(vec)}f", *vec)
+
+
+def _has_sentence_transformers() -> bool:
+    try:
+        import sentence_transformers  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 class MemoryDB:
     def __init__(self, db_path: str):
         self._path = db_path
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self._conn = sqlite3.connect(db_path)
         self._conn.row_factory = sqlite3.Row
+        self._has_vec = False
+        self._has_embed = _has_sentence_transformers()
         self._init_schema()
 
     def _init_schema(self):
@@ -60,7 +72,7 @@ class MemoryDB:
                 source_chatid TEXT
             );
         """)
-        # FTS5
+        # FTS5 — external content 模式，手动同步
         try:
             c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(name, description, properties, content=entities, content_rowid=rowid)")
         except Exception:
@@ -74,8 +86,38 @@ class MemoryDB:
             self._has_vec = True
         except Exception as e:
             log.warning("sqlite-vec 不可用，仅使用 FTS 检索: %s", e)
-            self._has_vec = False
         c.commit()
+
+    # ---- FTS content sync: 必须 delete 再 insert ----
+
+    def _fts_sync(self, entity_id: str):
+        row = self._conn.execute("SELECT rowid, name, description, properties FROM entities WHERE id=?", (entity_id,)).fetchone()
+        if not row:
+            return
+        # delete old entry (content sync 模式要求)
+        self._conn.execute("INSERT INTO entities_fts(entities_fts, rowid, name, description, properties) VALUES('delete', ?, ?, ?, ?)",
+                           (row["rowid"], row["name"], row["description"], row["properties"]))
+        # re-insert
+        self._conn.execute("INSERT INTO entities_fts(rowid, name, description, properties) VALUES(?, ?, ?, ?)",
+                           (row["rowid"], row["name"], row["description"], row["properties"]))
+
+    def _fts_insert(self, entity_id: str):
+        row = self._conn.execute("SELECT rowid, name, description, properties FROM entities WHERE id=?", (entity_id,)).fetchone()
+        if row:
+            self._conn.execute("INSERT INTO entities_fts(rowid, name, description, properties) VALUES(?, ?, ?, ?)",
+                               (row["rowid"], row["name"], row["description"], row["properties"]))
+
+    # ---- 向量更新 ----
+
+    def _vec_upsert(self, entity_id: str, description: str):
+        if self._has_vec and self._has_embed and description:
+            try:
+                emb = _embed(description)
+                self._conn.execute("INSERT OR REPLACE INTO entities_vec(id, embedding) VALUES (?, ?)", (entity_id, emb))
+            except Exception as e:
+                log.warning("向量写入失败: %s", e)
+
+    # ---- 实体 CRUD ----
 
     def save_entity(self, type: str, name: str, description: str,
                     properties: dict | None = None, source_chatid: str = "", reason: str = "") -> str:
@@ -86,32 +128,50 @@ class MemoryDB:
 
         if existing:
             old_ver = existing["version"]
-            # 归档旧版本
             self._conn.execute(
                 "INSERT OR REPLACE INTO entity_versions (entity_id, version, description, properties, changed_at, reason) VALUES (?,?,?,?,?,?)",
                 (entity_id, old_ver, existing["description"], existing["properties"], now, reason)
             )
-            new_ver = old_ver + 1
             self._conn.execute(
                 "UPDATE entities SET description=?, properties=?, version=?, updated_at=?, source_chatid=? WHERE id=?",
-                (description, props_json, new_ver, now, source_chatid, entity_id)
+                (description, props_json, old_ver + 1, now, source_chatid, entity_id)
             )
+            self._fts_sync(entity_id)
         else:
             self._conn.execute(
                 "INSERT INTO entities (id, type, name, description, properties, version, updated_at, source_chatid) VALUES (?,?,?,?,?,1,?,?)",
                 (entity_id, type, name, description, props_json, now, source_chatid)
             )
+            self._fts_insert(entity_id)
 
-        # 更新 FTS
-        self._conn.execute("INSERT OR REPLACE INTO entities_fts(rowid, name, description, properties) SELECT rowid, name, description, properties FROM entities WHERE id=?", (entity_id,))
-
-        # 更新向量
-        if self._has_vec and description:
-            emb = _embed(description)
-            self._conn.execute("INSERT OR REPLACE INTO entities_vec(id, embedding) VALUES (?, ?)", (entity_id, json.dumps(emb)))
-
+        self._vec_upsert(entity_id, description)
         self._conn.commit()
         return entity_id
+
+    def delete_entity(self, name: str) -> bool:
+        eid = self._guess_entity_id(name)
+        row = self._conn.execute("SELECT rowid, name, description, properties FROM entities WHERE id=?", (eid,)).fetchone()
+        if not row:
+            return False
+        # FTS delete
+        try:
+            self._conn.execute("INSERT INTO entities_fts(entities_fts, rowid, name, description, properties) VALUES('delete', ?, ?, ?, ?)",
+                               (row["rowid"], row["name"], row["description"], row["properties"]))
+        except Exception:
+            pass
+        # vec delete
+        if self._has_vec:
+            try:
+                self._conn.execute("DELETE FROM entities_vec WHERE id=?", (eid,))
+            except Exception:
+                pass
+        self._conn.execute("DELETE FROM entities WHERE id=?", (eid,))
+        self._conn.execute("DELETE FROM entity_versions WHERE entity_id=?", (eid,))
+        self._conn.execute("DELETE FROM relations WHERE from_id=? OR to_id=?", (eid, eid))
+        self._conn.commit()
+        return True
+
+    # ---- 关系 CRUD ----
 
     def save_relation(self, from_name: str, relation: str, to_name: str,
                       from_type: str = "", to_type: str = "",
@@ -119,8 +179,6 @@ class MemoryDB:
         from_id = f"{from_type}:{from_name}" if from_type else self._guess_entity_id(from_name)
         to_id = f"{to_type}:{to_name}" if to_type else self._guess_entity_id(to_name)
         now = int(time.time())
-
-        # 同类旧关系失效
         self._conn.execute(
             "UPDATE relations SET valid_to=? WHERE from_id=? AND relation=? AND to_id=? AND valid_to IS NULL",
             (now, from_id, relation, to_id)
@@ -131,10 +189,23 @@ class MemoryDB:
         )
         self._conn.commit()
 
+    def delete_relation(self, from_name: str, relation: str, to_name: str) -> bool:
+        from_id = self._guess_entity_id(from_name)
+        to_id = self._guess_entity_id(to_name)
+        now = int(time.time())
+        cursor = self._conn.execute(
+            "UPDATE relations SET valid_to=? WHERE from_id=? AND relation=? AND to_id=? AND valid_to IS NULL",
+            (now, from_id, relation, to_id)
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # ---- 检索 ----
+
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         results = {}
 
-        # FTS 搜索
+        # FTS
         try:
             rows = self._conn.execute(
                 "SELECT e.* FROM entities_fts f JOIN entities e ON f.rowid = e.rowid WHERE entities_fts MATCH ? LIMIT ?",
@@ -145,24 +216,37 @@ class MemoryDB:
         except Exception:
             pass
 
-        # 向量搜索
-        if self._has_vec:
+        # FTS 无结果时 fallback 到 LIKE（FTS5 默认分词器对中文支持差）
+        if not results:
+            try:
+                like = f"%{query}%"
+                rows = self._conn.execute(
+                    "SELECT * FROM entities WHERE name LIKE ? OR description LIKE ? LIMIT ?",
+                    (like, like, top_k)
+                ).fetchall()
+                for r in rows:
+                    results[r["id"]] = {"entity": dict(r), "score": 0.5, "source": "like"}
+            except Exception:
+                pass
+
+        # 向量
+        if self._has_vec and self._has_embed:
             try:
                 emb = _embed(query)
                 rows = self._conn.execute(
                     "SELECT id, distance FROM entities_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
-                    (json.dumps(emb), top_k)
+                    (emb, top_k)
                 ).fetchall()
                 for r in rows:
                     eid = r["id"]
                     if eid not in results:
                         entity = self._conn.execute("SELECT * FROM entities WHERE id=?", (eid,)).fetchone()
                         if entity:
-                            results[eid] = {"entity": dict(entity), "score": 1.0 - r["distance"], "source": "vec"}
+                            results[eid] = {"entity": dict(entity), "score": max(0, 1.0 - r["distance"]), "source": "vec"}
             except Exception as e:
                 log.warning("向量搜索失败: %s", e)
 
-        # 加载关联关系
+        # 加载关联关系 + 按 score 排序
         output = []
         for eid, info in results.items():
             rels = self._conn.execute(
@@ -171,21 +255,27 @@ class MemoryDB:
             ).fetchall()
             info["relations"] = [dict(r) for r in rels]
             output.append(info)
-
+        output.sort(key=lambda x: x["score"], reverse=True)
         return output
 
     def get_history(self, entity_name: str) -> list[dict]:
-        # 模糊匹配 entity_id
         eid = self._guess_entity_id(entity_name)
         rows = self._conn.execute(
-            "SELECT * FROM entity_versions WHERE entity_id=? ORDER BY version",
-            (eid,)
+            "SELECT * FROM entity_versions WHERE entity_id=? ORDER BY version", (eid,)
         ).fetchall()
         return [dict(r) for r in rows]
 
     def _guess_entity_id(self, name: str) -> str:
+        # 精确匹配 name
         row = self._conn.execute("SELECT id FROM entities WHERE name=? LIMIT 1", (name,)).fetchone()
-        return row["id"] if row else name
+        if row:
+            return row["id"]
+        # 已经是 type:name 格式
+        if ":" in name:
+            return name
+        # LIKE 模糊匹配
+        row = self._conn.execute("SELECT id FROM entities WHERE name LIKE ? LIMIT 1", (f"%{name}%",)).fetchone()
+        return row["id"] if row else f"unknown:{name}"
 
     def close(self):
         self._conn.close()

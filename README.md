@@ -24,6 +24,7 @@ kiro-cli acp --trust-all-tools
 - 👋 **入群欢迎语**：用户进入对话时自动发送欢迎消息
 - 💓 **心跳保活**：自动心跳 + 断线指数退避重连
 - ♻️ **进程池管理**：最多 10 个进程，LRU 淘汰，30 分钟空闲超时清理
+- 🧠 **长期记忆**：per-chatid SQLite 知识图谱，FTS5 全文检索 + sqlite-vec 向量语义检索
 
 ## 前置条件
 
@@ -48,19 +49,37 @@ wsl --install -d Ubuntu-24.04
 # 安装完成后重启电脑，然后打开 Ubuntu 终端设置用户名和密码
 ```
 
-如果网络问题导致下载失败，可以手动安装：
+如果 `wsl --install` 网络问题导致下载失败，可以用官方离线镜像：
 
 ```powershell
-# 方法一：从微软商店安装
+# 1. 下载 Ubuntu 22.04 官方 WSL 镜像
+#    https://cloud-images.ubuntu.com/wsl/jammy/current/ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz
+
+# 2. 导入（D:\wsl 为安装目录，可自定义）
+mkdir D:\wsl\Ubuntu-22.04
+wsl --import Ubuntu-22.04 D:\wsl\Ubuntu-22.04 .\ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz
+
+# 3. 进入
+wsl -d Ubuntu-22.04
+
+# 4. 创建普通用户（导入方式默认是 root）
+adduser yourname
+usermod -aG sudo yourname
+# 之后在 /etc/wsl.conf 中设置默认用户：
+echo -e "[user]\ndefault=yourname" >> /etc/wsl.conf
+# 退出后重启 WSL 生效
+exit
+wsl --shutdown
+wsl -d Ubuntu-22.04
+```
+
+其他安装方式：
+
+```powershell
+# 从微软商店安装
 # 打开 Microsoft Store，搜索 "Ubuntu 24.04"，点击安装
 
-# 方法二：手动下载离线包
-# 1. 浏览器访问 https://aka.ms/wslubuntu2404 下载 .appx 文件
-# 2. 双击安装，或用 PowerShell：
-Add-AppxPackage .\Ubuntu_2404.appx
-
-# 方法三：导入已有的 tar 镜像
-# 如果同事已经配好了环境，可以导出给你：
+# 导入同事已配好的环境
 #   导出端: wsl --export Ubuntu-24.04 ubuntu-backup.tar
 #   导入端:
 wsl --import Ubuntu-24.04 D:\wsl\Ubuntu-24.04 .\ubuntu-backup.tar
@@ -114,9 +133,19 @@ cd kiro-wecom-bridge
 ### 5. 安装 Python 依赖
 
 ```bash
-pip install -r requirements.txt
-# 如果遇到 externally-managed-environment 错误：
-pip install --break-system-packages -r requirements.txt
+# 核心依赖（企微桥接功能）
+bash install.sh
+
+# 完整安装（含记忆系统，会额外下载 ~500MB 的 PyTorch + sentence-transformers）
+bash install.sh --full
+```
+
+脚本会自动：安装系统依赖 → 创建 venv → pip install。`--full` 额外安装记忆系统的向量检索依赖。不装也能用，记忆系统会降级为纯 FTS5 全文检索。
+
+安装完成后，后续操作都需要先激活虚拟环境：
+
+```bash
+source .venv/bin/activate
 ```
 
 ### 6. 配置
@@ -188,7 +217,7 @@ tail -f /tmp/wecom-bridge.log
 **方式二：systemd 托管（推荐）**
 
 ```bash
-# 安装 service（按实际路径修改 service 文件中的 User 和 WorkingDirectory）
+# 安装 service（按实际路径修改 service 文件中的 User 和 WorkingDirectory，ExecStart 指向 start.sh）
 sudo cp kiro-wecom-bridge.service /etc/systemd/system/
 sudo systemctl daemon-reload
 
@@ -234,14 +263,57 @@ kiro-wecom-bridge/
 ├── ws_client.py          # 企微 WebSocket 长连接客户端
 ├── channel.py            # Channel 管理 + StreamSegmenter 流式分段
 ├── session.py            # ACP 进程池，per-chatid kiro-cli 进程管理
+├── memory.py             # 长期记忆：SQLite 实体关系图谱 + FTS5 + 向量检索
+├── memory_cli.py         # 记忆系统 CLI，供 kiro skill 通过 bash 调用
+├── install.sh            # 一键环境安装（venv + 依赖）
 ├── start.sh              # 启动脚本（前置检查 + 启动）
 ├── restart.sh            # 重启脚本（杀旧 + 启动新）
+├── kiro-wecom-bridge.service # systemd 服务文件
 ├── channels.json         # 机器人配置（git ignored）
 ├── channels.example.json # 配置模板
 ├── .env                  # 环境变量（git ignored）
 ├── .env.example          # 环境变量模板
 ├── requirements.txt
 └── README.md
+```
+
+## 长期记忆
+
+每个 chatid 拥有独立的 SQLite 记忆库，存储在 `{KIRO_WORK_DIR}/wecom-sessions/{chatid}/memory.db`。
+
+Kiro 通过 `wecom-memory` skill 自动调用，支持：
+- **实体管理**：保存人员、服务、项目、决策等实体，自动版本归档
+- **关系管理**：记录实体间关系（谁负责什么、什么依赖什么）
+- **双通道检索**：FTS5 全文匹配 + sqlite-vec 向量语义搜索
+
+手动测试：
+
+```bash
+source .venv/bin/activate
+
+# 保存实体
+MEMORY_CHATID=test python3 memory_cli.py save_entity '{"type":"person","name":"张三","description":"后端开发，负责订单服务"}'
+
+# 搜索
+MEMORY_CHATID=test python3 memory_cli.py search '{"query":"订单"}'
+
+# 保存关系
+MEMORY_CHATID=test python3 memory_cli.py save_relation '{"from_name":"张三","relation":"负责","to_name":"ec-so-service"}'
+
+# 删除实体
+MEMORY_CHATID=test python3 memory_cli.py delete_entity '{"name":"张三"}'
+
+# 删除关系
+MEMORY_CHATID=test python3 memory_cli.py delete_relation '{"from_name":"张三","relation":"负责","to_name":"ec-so-service"}'
+
+# 查看变更历史
+MEMORY_CHATID=test python3 memory_cli.py get_history '{"entity_name":"张三"}'
+```
+
+查看原始数据：
+
+```bash
+sqlite3 /mnt/d/workspace/all/wecom-sessions/test/memory.db "SELECT * FROM entities;"
 ```
 
 ## License

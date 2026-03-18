@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=lucky
 WorkingDirectory=/mnt/d/code/yami/kiro-wecom-bridge
-ExecStart=/usr/bin/python3 main.py
+ExecStart=/mnt/d/code/yami/kiro-wecom-bridge/start.sh
 Restart=always
 RestartSec=5
 Environment=PATH=/home/lucky/.local/bin:/usr/local/bin:/usr/bin:/bin
