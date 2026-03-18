@@ -6,7 +6,6 @@ log = logging.getLogger(__name__)
 
 WORK_DIR = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
 SESSIONS_DIR = os.path.join(WORK_DIR, "wecom-sessions")
-BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
 SUMMARY_FILE = "summary.md"
 SUMMARY_PROMPT = "请用简洁的要点总结本次对话的关键信息（包括讨论了什么、做了什么决定、有什么待办），不超过500字。只输出总结内容，不要加前缀。"
 EXTRACT_PROMPT = """请从以下对话摘要中提取值得长期记住的实体和关系，调用 save_entity 和 save_relation 保存。
@@ -37,14 +36,9 @@ def _save_summary(session_dir: str, text: str):
         log.error("保存摘要失败: %s", e)
 
 
-def _mcp_servers_config(chatid: str) -> list:
-    """生成 memory MCP server 配置"""
-    return [{
-        "name": "memory",
-        "command": "python3",
-        "args": [os.path.join(BRIDGE_DIR, "memory_mcp.py")],
-        "env": {"MEMORY_CHATID": chatid, "KIRO_WORK_DIR": WORK_DIR},
-    }]
+def _mcp_servers_config() -> list:
+    """无 MCP server — 记忆系统改用 skill"""
+    return []
 
 
 class KiroProcess:
@@ -88,7 +82,7 @@ class KiroProcess:
             "clientInfo": {"name": "wecom-bridge", "version": "1.0"},
         })
 
-        # session/new with memory MCP
+        # session/new
         await self._create_session()
 
         # L2: 注入上次会话摘要
@@ -100,7 +94,7 @@ class KiroProcess:
     async def _create_session(self):
         result = await self._send_rpc_and_wait("session/new", {
             "cwd": self._cwd,
-            "mcpServers": _mcp_servers_config(self._chatid),
+            "mcpServers": _mcp_servers_config(),
         })
         if isinstance(result, dict):
             self._session_id = result.get("sessionId", "")
