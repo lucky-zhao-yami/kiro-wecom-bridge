@@ -6,14 +6,23 @@ log = logging.getLogger(__name__)
 
 WORK_DIR = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
 SESSIONS_DIR = os.path.join(WORK_DIR, "wecom-sessions")
+BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
 SUMMARY_FILE = "summary.md"
-SUMMARY_PROMPT = "请用简洁的要点总结本次对话的关键信息（包括讨论了什么、做了什么决定、有什么待办），不超过500字。只输出总结内容，不要加前缀。"
-EXTRACT_PROMPT = """请从以下对话摘要中提取值得长期记住的实体和关系，调用 save_entity 和 save_relation 保存。
-只提取重要的事实（人员职责、服务信息、技术决策、用户偏好等），忽略闲聊。
-如果没有值得保存的信息，直接说"无需保存"。
+HISTORY_FILE = "history.jsonl"
 
-对话摘要:
-{summary}"""
+RECYCLE_PROMPT = """以下是一段对话记录。请完成两件事：
+
+1. **总结**：用简洁的要点总结对话的关键信息（讨论了什么、做了什么决定、有什么待办），不超过500字。
+
+2. **知识提取**：从对话中提取值得长期记住的实体和关系，调用 wecom-memory skill 的 save_entity 和 save_relation 保存。
+   只提取重要的事实（人员职责、服务信息、技术决策、用户偏好等），忽略闲聊。
+   如果没有值得保存的信息，跳过这步。
+   chatid: {chatid}
+
+先输出总结（以"## 总结"开头），然后执行知识提取。
+
+---
+{history}"""
 
 
 def _load_summary(session_dir: str) -> str:
@@ -36,9 +45,17 @@ def _save_summary(session_dir: str, text: str):
         log.error("保存摘要失败: %s", e)
 
 
-def _mcp_servers_config() -> list:
-    """无 MCP server — 记忆系统改用 skill"""
-    return []
+def _format_history(history: list[dict]) -> str:
+    lines = []
+    for h in history:
+        lines.append(f"用户: {h['user']}")
+        if h.get("assistant"):
+            # 截断过长的回复
+            reply = h["assistant"]
+            if len(reply) > 500:
+                reply = reply[:500] + "...(截断)"
+            lines.append(f"助手: {reply}")
+    return "\n".join(lines)
 
 
 class KiroProcess:
@@ -58,6 +75,8 @@ class KiroProcess:
         self._pending: dict[int, asyncio.Future] = {}
         self._chunk_queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._full_text: str = ""
+        self._history: list[dict] = []  # 对话历史 [{user, assistant}]
+        self._first_msg = True  # 是否是第一条消息（用于注入摘要）
 
     async def start(self):
         os.makedirs(self._session_dir, exist_ok=True)
@@ -75,26 +94,17 @@ class KiroProcess:
         self._reader_task = asyncio.create_task(self._reader_loop())
         log.info("KiroProcess 启动 chatid=%s pid=%d agent=%s", self._chatid, self._proc.pid, self._agent)
 
-        # initialize
         await self._send_rpc_and_wait("initialize", {
             "protocolVersion": 1,
             "clientCapabilities": {},
             "clientInfo": {"name": "wecom-bridge", "version": "1.0"},
         })
-
-        # session/new
         await self._create_session()
-
-        # L2: 注入上次会话摘要
-        summary = _load_summary(self._session_dir)
-        if summary:
-            log.info("注入会话摘要 chatid=%s len=%d", self._chatid, len(summary))
-            await self.send(f"[系统] 上次会话摘要（仅供参考，不需要回复）:\n{summary}")
 
     async def _create_session(self):
         result = await self._send_rpc_and_wait("session/new", {
             "cwd": self._cwd,
-            "mcpServers": _mcp_servers_config(),
+            "mcpServers": [],
         })
         if isinstance(result, dict):
             self._session_id = result.get("sessionId", "")
@@ -110,11 +120,22 @@ class KiroProcess:
 
     async def send(self, text: str, on_chunk=None, timeout: float = 300) -> str:
         async with self._lock:
+            # 第一条消息时注入上次摘要
+            actual_text = text
+            if self._first_msg:
+                self._first_msg = False
+                summary = _load_summary(self._session_dir)
+                if summary:
+                    actual_text = f"[上次会话摘要]\n{summary}\n\n---\n[chatid={self._chatid}]\n{text}"
+                    log.info("注入会话摘要 chatid=%s len=%d", self._chatid, len(summary))
+                else:
+                    actual_text = f"[chatid={self._chatid}]\n{text}"
+
             self._full_text = ""
             self._chunk_queue = asyncio.Queue()
             mid = await self._send_rpc("session/prompt", {
                 "sessionId": self._session_id,
-                "prompt": [{"type": "text", "text": text}],
+                "prompt": [{"type": "text", "text": actual_text}],
             })
             try:
                 loop = asyncio.get_running_loop()
@@ -129,12 +150,16 @@ class KiroProcess:
                     if on_chunk:
                         await on_chunk(chunk)
                 self._last_active = time.monotonic()
+                # 记录对话历史
+                self._history.append({"user": text, "assistant": self._full_text})
                 return self._full_text
             except asyncio.TimeoutError:
                 log.warning("prompt 超时 chatid=%s", self._chatid)
+                self._history.append({"user": text, "assistant": ""})
                 return "⏰ 回复超时，请稍后重试"
             except RuntimeError as e:
                 log.error("ACP 进程异常 chatid=%s: %s", self._chatid, e)
+                self._history.append({"user": text, "assistant": ""})
                 return f"❌ ACP 进程异常: {e}"
             finally:
                 self._pending.pop(mid, None)
@@ -185,34 +210,9 @@ class KiroProcess:
             self._pending.clear()
             await self._chunk_queue.put(None)
 
-    async def _generate_summary(self):
-        """L2: 生成会话摘要"""
-        if not self.alive:
-            return
-        try:
-            summary = await self.send(SUMMARY_PROMPT, timeout=60)
-            if summary and not summary.startswith("⏰") and not summary.startswith("❌"):
-                _save_summary(self._session_dir, summary)
-                log.info("会话摘要已保存 chatid=%s len=%d", self._chatid, len(summary))
-        except Exception as e:
-            log.error("生成摘要失败 chatid=%s: %s", self._chatid, e)
-
-    async def _extract_knowledge(self):
-        """L3: 异步提取知识到图谱（通过 MCP 工具）"""
-        summary = _load_summary(self._session_dir)
-        if not summary or not self.alive:
-            return
-        try:
-            await self.send(EXTRACT_PROMPT.format(summary=summary), timeout=120)
-            log.info("知识提取完成 chatid=%s", self._chatid)
-        except Exception as e:
-            log.error("知识提取失败 chatid=%s: %s", self._chatid, e)
-
     async def stop(self):
-        # L2 + L3: 回收前生成摘要并提取知识
-        if self.alive:
-            await self._generate_summary()
-            await self._extract_knowledge()
+        history = self._history.copy()
+        # 先终止主进程
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
         if self._proc and self._proc.returncode is None:
@@ -223,6 +223,9 @@ class KiroProcess:
                 self._proc.kill()
                 await self._proc.wait()
         self._proc = None
+        # 异步回收：起临时进程做摘要+知识提取
+        if history:
+            asyncio.create_task(_recycle_memory(self._chatid, self._session_dir, self._cwd, history))
 
     @property
     def alive(self) -> bool:
@@ -231,6 +234,113 @@ class KiroProcess:
     @property
     def idle_seconds(self) -> float:
         return time.monotonic() - self._last_active
+
+
+async def _recycle_memory(chatid: str, session_dir: str, cwd: str, history: list[dict]):
+    """起临时 kiro-cli 进程做 L2 摘要 + L3 知识提取"""
+    if not history:
+        return
+    history_text = _format_history(history)
+    prompt = RECYCLE_PROMPT.format(chatid=chatid, history=history_text)
+    log.info("开始回收记忆 chatid=%s turns=%d", chatid, len(history))
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "kiro-cli", "acp", "--trust-all-tools",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=session_dir,
+        )
+        msg_id = 0
+
+        async def rpc(method, params, timeout=60):
+            nonlocal msg_id
+            msg_id += 1
+            line = json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
+            proc.stdin.write((line + "\n").encode())
+            await proc.stdin.drain()
+            # 读到对应 id 的 result
+            deadline = asyncio.get_running_loop().time() + timeout
+            while asyncio.get_running_loop().time() < deadline:
+                raw = await asyncio.wait_for(proc.stdout.readline(), timeout=deadline - asyncio.get_running_loop().time())
+                if not raw:
+                    raise RuntimeError("process exited")
+                try:
+                    msg = json.loads(raw.decode().strip())
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if msg.get("id") == msg_id:
+                    if "error" in msg:
+                        raise RuntimeError(str(msg["error"]))
+                    return msg.get("result")
+            raise asyncio.TimeoutError()
+
+        async def prompt_and_collect(session_id, text, timeout=180):
+            nonlocal msg_id
+            msg_id += 1
+            mid = msg_id
+            line = json.dumps({"jsonrpc": "2.0", "id": mid, "method": "session/prompt",
+                               "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": text}]}})
+            proc.stdin.write((line + "\n").encode())
+            await proc.stdin.drain()
+            full = ""
+            deadline = asyncio.get_running_loop().time() + timeout
+            while asyncio.get_running_loop().time() < deadline:
+                raw = await asyncio.wait_for(proc.stdout.readline(), timeout=deadline - asyncio.get_running_loop().time())
+                if not raw:
+                    break
+                try:
+                    msg = json.loads(raw.decode().strip())
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if msg.get("method") == "session/update":
+                    update = msg.get("params", {}).get("update", {})
+                    if update.get("sessionUpdate") == "agent_message_chunk":
+                        full += update.get("content", {}).get("text", "")
+                elif msg.get("id") == mid and "result" in msg:
+                    result = msg["result"]
+                    if isinstance(result, dict) and result.get("stopReason") == "end_turn":
+                        break
+            return full
+
+        # initialize
+        await rpc("initialize", {
+            "protocolVersion": 1, "clientCapabilities": {},
+            "clientInfo": {"name": "wecom-bridge-recycle", "version": "1.0"},
+        })
+        # session/new
+        result = await rpc("session/new", {"cwd": cwd, "mcpServers": []})
+        sid = result.get("sessionId", "") if isinstance(result, dict) else ""
+
+        # 发送回收 prompt
+        reply = await prompt_and_collect(sid, prompt)
+
+        # 提取总结部分保存
+        if reply:
+            # 取 "## 总结" 之后的内容作为摘要
+            if "## 总结" in reply:
+                summary = reply.split("## 总结", 1)[1].strip()
+                # 如果后面还有其他 ## 标题，截断
+                for marker in ["## 知识提取", "## "]:
+                    if marker in summary and marker != summary[:len(marker)]:
+                        idx = summary.index(marker, 1) if summary.startswith(marker) else summary.index(marker)
+                        summary = summary[:idx].strip()
+                        break
+            else:
+                summary = reply[:500]
+            _save_summary(session_dir, summary)
+            log.info("回收完成 chatid=%s summary_len=%d", chatid, len(summary))
+
+        # 终止临时进程
+        try:
+            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            proc.kill()
+
+    except Exception as e:
+        log.error("回收记忆失败 chatid=%s: %s", chatid, e)
 
 
 class ProcessPool:
