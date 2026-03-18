@@ -6,6 +6,45 @@ log = logging.getLogger(__name__)
 
 WORK_DIR = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
 SESSIONS_DIR = os.path.join(WORK_DIR, "wecom-sessions")
+BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+SUMMARY_FILE = "summary.md"
+SUMMARY_PROMPT = "请用简洁的要点总结本次对话的关键信息（包括讨论了什么、做了什么决定、有什么待办），不超过500字。只输出总结内容，不要加前缀。"
+EXTRACT_PROMPT = """请从以下对话摘要中提取值得长期记住的实体和关系，调用 save_entity 和 save_relation 保存。
+只提取重要的事实（人员职责、服务信息、技术决策、用户偏好等），忽略闲聊。
+如果没有值得保存的信息，直接说"无需保存"。
+
+对话摘要:
+{summary}"""
+
+
+def _load_summary(session_dir: str) -> str:
+    p = os.path.join(session_dir, SUMMARY_FILE)
+    if os.path.isfile(p):
+        try:
+            with open(p, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return ""
+
+
+def _save_summary(session_dir: str, text: str):
+    try:
+        os.makedirs(session_dir, exist_ok=True)
+        with open(os.path.join(session_dir, SUMMARY_FILE), "w") as f:
+            f.write(text)
+    except Exception as e:
+        log.error("保存摘要失败: %s", e)
+
+
+def _mcp_servers_config(chatid: str) -> list:
+    """生成 memory MCP server 配置"""
+    return [{
+        "name": "memory",
+        "command": "python3",
+        "args": [os.path.join(BRIDGE_DIR, "memory_mcp.py")],
+        "env": {"MEMORY_CHATID": chatid, "KIRO_WORK_DIR": WORK_DIR},
+    }]
 
 
 class KiroProcess:
@@ -49,20 +88,25 @@ class KiroProcess:
             "clientInfo": {"name": "wecom-bridge", "version": "1.0"},
         })
 
-        # session/new
+        # session/new with memory MCP
         await self._create_session()
+
+        # L2: 注入上次会话摘要
+        summary = _load_summary(self._session_dir)
+        if summary:
+            log.info("注入会话摘要 chatid=%s len=%d", self._chatid, len(summary))
+            await self.send(f"[系统] 上次会话摘要（仅供参考，不需要回复）:\n{summary}")
 
     async def _create_session(self):
         result = await self._send_rpc_and_wait("session/new", {
             "cwd": self._cwd,
-            "mcpServers": [],
+            "mcpServers": _mcp_servers_config(self._chatid),
         })
         if isinstance(result, dict):
             self._session_id = result.get("sessionId", "")
         log.info("session/new 成功 chatid=%s sid=%s", self._chatid, self._session_id)
 
     async def _send_rpc_and_wait(self, method: str, params: dict, timeout: float = 60):
-        """发送 JSON-RPC 并等待 result"""
         mid = await self._send_rpc(method, params)
         fut = self._pending[mid]
         try:
@@ -115,7 +159,7 @@ class KiroProcess:
         try:
             while True:
                 raw = await self._proc.stdout.readline()
-                if not raw:  # EOF
+                if not raw:
                     break
                 try:
                     msg = json.loads(raw.decode().strip())
@@ -130,7 +174,7 @@ class KiroProcess:
                     if fut and not fut.done():
                         fut.set_result(result)
                 elif "id" in msg and "error" in msg:
-                    await self._chunk_queue.put(None)  # OBS-1: error 也终止 chunk 消费
+                    await self._chunk_queue.put(None)
                     fut = self._pending.get(msg["id"])
                     if fut and not fut.done():
                         fut.set_exception(RuntimeError(str(msg["error"])))
@@ -140,7 +184,6 @@ class KiroProcess:
                         text = update.get("content", {}).get("text", "")
                         self._full_text += text
                         await self._chunk_queue.put(text)
-                # ignore _kiro.dev/* and other notifications
         finally:
             for fut in self._pending.values():
                 if not fut.done():
@@ -148,7 +191,34 @@ class KiroProcess:
             self._pending.clear()
             await self._chunk_queue.put(None)
 
+    async def _generate_summary(self):
+        """L2: 生成会话摘要"""
+        if not self.alive:
+            return
+        try:
+            summary = await self.send(SUMMARY_PROMPT, timeout=60)
+            if summary and not summary.startswith("⏰") and not summary.startswith("❌"):
+                _save_summary(self._session_dir, summary)
+                log.info("会话摘要已保存 chatid=%s len=%d", self._chatid, len(summary))
+        except Exception as e:
+            log.error("生成摘要失败 chatid=%s: %s", self._chatid, e)
+
+    async def _extract_knowledge(self):
+        """L3: 异步提取知识到图谱（通过 MCP 工具）"""
+        summary = _load_summary(self._session_dir)
+        if not summary or not self.alive:
+            return
+        try:
+            await self.send(EXTRACT_PROMPT.format(summary=summary), timeout=120)
+            log.info("知识提取完成 chatid=%s", self._chatid)
+        except Exception as e:
+            log.error("知识提取失败 chatid=%s: %s", self._chatid, e)
+
     async def stop(self):
+        # L2 + L3: 回收前生成摘要并提取知识
+        if self.alive:
+            await self._generate_summary()
+            await self._extract_knowledge()
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
         if self._proc and self._proc.returncode is None:
