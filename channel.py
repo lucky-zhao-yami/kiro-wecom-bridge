@@ -56,10 +56,6 @@ class Channel:
         self.ws = WsClient(self.bot_id, config["secret"], self._on_message, self._on_event)
         self.pool = ProcessPool()
         self._chats = self._parse_chats(config)
-        self._alert_chatids: list[str] = [
-            cid for cid, cfg in self._chats.items()
-            if cfg.get("alert") and cid != "default"
-        ]
 
     def _parse_chats(self, config: dict) -> dict:
         if "chats" in config:
@@ -122,25 +118,6 @@ class Channel:
             await self.ws.send_welcome(req_id, self.welcome_msg)
         elif event_type == "disconnected_event":
             log.warning("Channel [%s] 收到断开事件", self.bot_id[:8])
-
-    # ---- 告警 ----
-
-    async def send_alert(self, content: str):
-        for chatid in self._alert_chatids:
-            chat_cfg = self._get_chat_config(chatid)
-            try:
-                proc = await self.pool.get_or_create(
-                    chatid, agent=chat_cfg.get("agent"), cwd=chat_cfg.get("cwd", WORK_DIR)
-                )
-                reply = await proc.send(f"请分析以下告警:\n{content}")
-                short = content.split("\n监控SQL：")[0]
-                msg = f"⚠️ 告警通知\n{short}\n\n🤖 Kiro 分析\n{reply}"
-                await self.ws.send_msg(chatid, 2, msg)
-            except Exception as e:
-                log.error("告警处理失败 chatid=%s: %s", chatid, e)
-                short = content.split("\n" + "监控SQL：")[0]
-                await self.ws.send_msg(chatid, 2, f"⚠️ 告警通知\n{short}\n\n❌ 分析失败: {e}")
-
 
 class ChannelManager:
     def __init__(self):

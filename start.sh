@@ -21,7 +21,10 @@ if ! command -v kiro-cli &>/dev/null; then
 fi
 
 # 检查 Python 依赖
-pip install -q -r requirements.txt 2>/dev/null
+python3 -c "import fastapi, uvicorn, httpx, dotenv, websockets" 2>/dev/null || {
+    echo "📦 安装依赖 ..."
+    pip install --break-system-packages -q -r requirements.txt
+}
 
 echo "🚀 启动 kiro-wecom-bridge ..."
 exec python3 main.py
