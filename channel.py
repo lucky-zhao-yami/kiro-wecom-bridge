@@ -9,41 +9,64 @@ log = logging.getLogger(__name__)
 DEFAULT_WELCOME = "👋 你好！我是 Kiro AI 助手，有什么可以帮你的？"
 WORK_DIR = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
 STREAM_SEGMENT_LIMIT = 1500
+FLUSH_INTERVAL = 0.3  # 攒 0.3s 再发一次，避免企微版本冲突
 
 
 class StreamSegmenter:
-    """流式输出分段：累计超阈值时 finish 当前 stream，开新 stream 继续"""
+    """流式输出分段：带缓冲节流，累计超阈值时 finish 当前 stream 开新 stream"""
 
-    def __init__(self, ws: WsClient, req_id: str, stream_id: str, limit: int = STREAM_SEGMENT_LIMIT):
+    def __init__(self, ws: WsClient, req_id: str, stream_id: str,
+                 limit: int = STREAM_SEGMENT_LIMIT, flush_interval: float = FLUSH_INTERVAL):
         self._ws = ws
         self._req_id = req_id
         self._stream_id = stream_id
         self._limit = limit
+        self._flush_interval = flush_interval
         self._seg_len = 0
+        self._buf = ""
         self._finished = False
+        self._flush_task: asyncio.Task | None = None
 
     async def feed(self, delta: str):
-        remaining = delta
-        while remaining:
+        self._buf += delta
+        # 缓冲区超过阈值剩余空间时立刻 flush，否则等定时器
+        if self._seg_len + len(self._buf) >= self._limit:
+            await self._flush()
+        elif not self._flush_task or self._flush_task.done():
+            self._flush_task = asyncio.create_task(self._delayed_flush())
+
+    async def _delayed_flush(self):
+        await asyncio.sleep(self._flush_interval)
+        if self._buf:
+            await self._flush()
+
+    async def _flush(self):
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+        while self._buf:
             space = self._limit - self._seg_len
-            if len(remaining) <= space:
-                await self._ws.send_stream(self._req_id, self._stream_id, remaining, finish=False)
-                self._seg_len += len(remaining)
-                remaining = ""
+            if len(self._buf) <= space:
+                await self._ws.send_stream(self._req_id, self._stream_id, self._buf, finish=False)
+                self._seg_len += len(self._buf)
+                self._buf = ""
             else:
                 cut = space
-                nl = remaining.rfind("\n", 0, space)
+                nl = self._buf.rfind("\n", 0, space)
                 if nl > 0:
                     cut = nl + 1
-                part = remaining[:cut]
+                part = self._buf[:cut]
                 if part:
                     await self._ws.send_stream(self._req_id, self._stream_id, part, finish=False)
                 await self._ws.send_stream(self._req_id, self._stream_id, "", finish=True)
                 self._stream_id = uuid.uuid4().hex[:16]
                 self._seg_len = 0
-                remaining = remaining[cut:]
+                self._buf = self._buf[cut:]
 
     async def finish(self):
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+        if self._buf:
+            await self._flush()
         if not self._finished and self._seg_len > 0:
             await self._ws.send_stream(self._req_id, self._stream_id, "", finish=True)
             self._finished = True
@@ -118,6 +141,7 @@ class Channel:
             await self.ws.send_welcome(req_id, self.welcome_msg)
         elif event_type == "disconnected_event":
             log.warning("Channel [%s] 收到断开事件", self.bot_id[:8])
+
 
 class ChannelManager:
     def __init__(self):
