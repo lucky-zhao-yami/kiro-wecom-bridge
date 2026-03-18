@@ -1,4 +1,5 @@
-.env
-channels.json
-__pycache__/
 *.pyc
+.bridge.pid
+.env
+__pycache__/
+channels.json
