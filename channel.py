@@ -101,7 +101,9 @@ class Channel:
         chatid = body.get("chatid", "")
         userid = body.get("from", {}).get("userid", "unknown")
         msgtype = body.get("msgtype", "")
-        log.info("收到消息 req=%s chatid=%s userid=%s type=%s body_keys=%s", req_id, chatid, userid, msgtype, list(body.keys()))
+        if not chatid:
+            chatid = f"dm_{userid}"  # 单聊用 userid 做隔离 key
+        log.info("收到消息 req=%s chatid=%s userid=%s type=%s", req_id, chatid, userid, msgtype)
 
         if msgtype != "text":
             await self.ws.send_stream(req_id, uuid.uuid4().hex[:16], "暂不支持该消息类型，请发送文本消息。", finish=True)
