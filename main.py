@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI
+from pydantic import BaseModel
 
 from channel import ChannelManager
 
@@ -41,6 +42,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="kiro-wecom-bridge", lifespan=lifespan)
+
+
+# ---- 定时任务触发接口 ----
+
+class CronTriggerRequest(BaseModel):
+    chatid: str
+    prompt: str
+    bot_index: int = 0  # 多机器人时指定用哪个 channel，默认第一个
+
+
+@app.post("/cron/trigger")
+async def cron_trigger(req: CronTriggerRequest):
+    """供 crontab 调用：向指定群发送 prompt，结果推送回企微"""
+    if req.bot_index >= len(cm.channels):
+        return {"ok": False, "error": f"bot_index {req.bot_index} 超出范围"}
+    ch = cm.channels[req.bot_index]
+    chat_cfg = ch._get_chat_config(req.chatid)
+    agent = chat_cfg.get("agent")
+    cwd = chat_cfg.get("cwd", os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all"))
+    try:
+        proc = await ch.pool.get_or_create(req.chatid, agent=agent, cwd=cwd)
+        reply = await proc.send(f"[cron]: {req.prompt}", timeout=300)
+        await ch.ws.send_msg(req.chatid, 2, reply)
+        return {"ok": True, "reply_length": len(reply)}
+    except Exception as e:
+        log.error("cron trigger 异常 chatid=%s: %s", req.chatid, e)
+        return {"ok": False, "error": str(e)}
 
 
 if __name__ == "__main__":

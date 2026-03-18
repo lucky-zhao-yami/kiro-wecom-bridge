@@ -204,6 +204,28 @@ journalctl -u kiro-wecom-bridge -f        # 查看日志
 
 systemd 会自动处理：崩溃重启（5 秒后）、开机自启、日志管理（journalctl）。
 
+## 定时任务
+
+用户在聊天中让 Kiro 创建定时任务时，Kiro 可以直接写 crontab，到点通过 `/cron/trigger` 接口触发执行。
+
+**接口**：`POST http://localhost:8900/cron/trigger`
+
+```json
+{"chatid": "群聊ID或dm_用户ID", "prompt": "要执行的任务描述"}
+```
+
+**crontab 示例**：
+
+```bash
+# 每天早上 9 点检查线上订单异常
+0 9 * * * curl -s -X POST http://localhost:8900/cron/trigger -H 'Content-Type: application/json' -d '{"chatid":"YOUR_CHAT_ID","prompt":"检查线上订单有没有异常，有的话列出来"}'
+
+# 每周一 10 点生成周报
+0 10 * * 1 curl -s -X POST http://localhost:8900/cron/trigger -H 'Content-Type: application/json' -d '{"chatid":"YOUR_CHAT_ID","prompt":"生成上周的工作周报"}'
+```
+
+Kiro 会执行 prompt 并将结果主动推送到对应的企微群。
+
 ## 项目结构
 
 ```
