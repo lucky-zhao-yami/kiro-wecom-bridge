@@ -2,21 +2,20 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PIDFILE=".bridge.pid"
+echo "⏹ 停止旧服务 ..."
 
-# 杀旧进程：先查 pid 文件，再查端口兜底
-if [ -f "$PIDFILE" ]; then
-    oldpid=$(cat "$PIDFILE")
-    kill "$oldpid" 2>/dev/null && echo "⏹ 旧服务已停止 (pid=$oldpid)"
-    rm -f "$PIDFILE"
-fi
-# 兜底：按端口杀
+# 按端口杀 main.py
 port_pid=$(lsof -ti :8900 2>/dev/null || true)
-if [ -n "$port_pid" ]; then
-    echo "$port_pid" | xargs kill 2>/dev/null
-    echo "⏹ 端口 8900 占用进程已停止"
-fi
-pkill -f "kiro-cli.*acp" 2>/dev/null && echo "⏹ 残留 ACP 进程已清理" || true
+[ -n "$port_pid" ] && echo "$port_pid" | xargs kill 2>/dev/null && echo "  killed main (pid=$port_pid)"
+
+# 杀残留 kiro-cli acp 子进程
+for p in $(pgrep -f "kiro-cli-chat acp" 2>/dev/null || true); do
+    kill "$p" 2>/dev/null && echo "  killed acp (pid=$p)"
+done
+
+rm -f .bridge.pid
 sleep 2
 
-exec ./start.sh
+echo "🚀 启动 ..."
+nohup ./start.sh >> /tmp/wecom-bridge.log 2>&1 &
+echo "✅ 已启动 pid=$!"
