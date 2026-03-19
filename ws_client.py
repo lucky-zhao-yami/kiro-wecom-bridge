@@ -1,5 +1,5 @@
 """企微智能机器人 WebSocket 长连接客户端"""
-import asyncio, json, logging, time, uuid
+import asyncio, base64, json, logging, time, uuid
 
 import websockets
 
@@ -26,6 +26,7 @@ class WsClient:
         self._last_pong: float = 0
         self._auth_failures = 0
         self._send_lock = asyncio.Lock()
+        self._media_waiters: dict[str, asyncio.Future] = {}  # req_id → Future[bytes|None]
 
     # ---- 连接生命周期 ----
 
@@ -82,10 +83,35 @@ class WsClient:
         hb = asyncio.create_task(self._heartbeat())
         try:
             async for raw in self._ws:
-                msg = json.loads(raw)
+                # aibot_get_media 可能返回二进制
+                if isinstance(raw, bytes):
+                    try:
+                        msg = json.loads(raw)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        # 纯二进制媒体数据 — 分发给第一个等待中的 media waiter
+                        for rid, fut in list(self._media_waiters.items()):
+                            if not fut.done():
+                                fut.set_result(raw)
+                                break
+                        continue
+                else:
+                    msg = json.loads(raw)
+
                 cmd = msg.get("cmd", "")
                 req_id = msg.get("headers", {}).get("req_id", "")
                 body = msg.get("body", {})
+
+                # 检查是否是 media 响应（JSON 格式的成功/失败）
+                if req_id in self._media_waiters:
+                    fut = self._media_waiters[req_id]
+                    if not fut.done():
+                        if msg.get("errcode", 0) != 0:
+                            fut.set_result(None)
+                        else:
+                            data = body.get("data", "")
+                            fut.set_result(base64.b64decode(data) if data else None)
+                    continue
+
                 if cmd == "aibot_msg_callback":
                     asyncio.create_task(self._on_message(req_id, body))
                 elif cmd == "aibot_event_callback":
@@ -96,6 +122,11 @@ class WsClient:
                     log.info("[%s] 收到未知 cmd: %s body=%s", self._bot_id[:8], cmd, str(msg)[:200])
         finally:
             hb.cancel()
+            # 清理所有等待中的 media waiter
+            for fut in self._media_waiters.values():
+                if not fut.done():
+                    fut.set_result(None)
+            self._media_waiters.clear()
 
     async def _heartbeat(self):
         while True:
@@ -138,37 +169,20 @@ class WsClient:
     async def get_media(self, media_id: str, timeout: float = 30) -> bytes | None:
         """通过 aibot_get_media 下载媒体文件，返回原始字节"""
         rid = _req_id()
-        await self._send_raw({
-            "cmd": "aibot_get_media",
-            "headers": {"req_id": rid},
-            "body": {"media_id": media_id},
-        })
+        fut = asyncio.get_running_loop().create_future()
+        self._media_waiters[rid] = fut
         try:
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=timeout)
-            # 企微返回的可能是 JSON（错误）或二进制（文件内容）
-            if isinstance(raw, bytes):
-                # 检查是否是 JSON 错误响应
-                try:
-                    resp = json.loads(raw)
-                    if resp.get("errcode", 0) != 0:
-                        log.error("get_media 失败: %s", resp)
-                        return None
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    return raw  # 真正的二进制数据
-            else:
-                resp = json.loads(raw)
-                if resp.get("errcode", 0) != 0:
-                    log.error("get_media 失败: %s", resp)
-                    return None
-                # 有些版本返回 base64 编码的 data
-                import base64
-                data = resp.get("body", {}).get("data", "")
-                if data:
-                    return base64.b64decode(data)
-            return None
+            await self._send_raw({
+                "cmd": "aibot_get_media",
+                "headers": {"req_id": rid},
+                "body": {"media_id": media_id},
+            })
+            return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             log.error("get_media 超时 media_id=%s", media_id)
             return None
+        finally:
+            self._media_waiters.pop(rid, None)
 
     async def send_msg(self, chatid: str, chat_type: int, content: str):
         """主动推送 aibot_send_msg (markdown)
