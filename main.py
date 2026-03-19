@@ -53,10 +53,10 @@ class CronTriggerRequest(BaseModel):
 
 
 class SendMsgRequest(BaseModel):
-    chatid: str
+    chatid: str = "dm_ZhaoXingPing"
     content: str
     bot_index: int = 0
-    chat_type: int = 2  # 1=单聊 2=群聊
+    chat_type: int = 1  # 1=单聊 2=群聊，默认私聊给 ZhaoXingPing
 
 
 @app.post("/send")
