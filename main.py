@@ -8,7 +8,9 @@ load_dotenv()
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from typing import Optional
 from channel import ChannelManager
+import scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -33,6 +35,7 @@ async def lifespan(app: FastAPI):
     cm.load(CHANNELS_PATH)
     ws_tasks = await cm.start_all()
     cleanup_task = asyncio.create_task(_cleanup_loop())
+    scheduler.sync_all()
     yield
     cleanup_task.cancel()
     for t in ws_tasks:
@@ -85,11 +88,63 @@ async def cron_trigger(req: CronTriggerRequest):
     try:
         proc = await ch.pool.get_or_create(req.chatid, agent=agent, cwd=cwd)
         reply = await proc.send(f"[cron]: {req.prompt}", timeout=300)
-        await ch.ws.send_msg(req.chatid, 2, reply)
+        chat_type = 1 if req.chatid.startswith("dm_") else 2
+        await ch.ws.send_msg(req.chatid, chat_type, reply)
         return {"ok": True, "reply_length": len(reply)}
     except Exception as e:
         log.error("cron trigger 异常 chatid=%s: %s", req.chatid, e)
         return {"ok": False, "error": str(e)}
+
+
+
+# ---- 定时任务调度 API ----
+
+class JobCreateRequest(BaseModel):
+    cron: str           # crontab 表达式，如 "0 9 * * *"
+    chatid: str         # 目标 chatid
+    prompt: str         # 要执行的 prompt
+    bot_index: int = 0
+    description: str = ""
+
+class JobUpdateRequest(BaseModel):
+    cron: Optional[str] = None
+    chatid: Optional[str] = None
+    prompt: Optional[str] = None
+    bot_index: Optional[int] = None
+    enabled: Optional[bool] = None
+    description: Optional[str] = None
+
+@app.post("/scheduler/jobs")
+async def create_job(req: JobCreateRequest):
+    job = scheduler.create_job(req.cron, req.chatid, req.prompt, req.bot_index, req.description)
+    return {"ok": True, "job": job}
+
+@app.get("/scheduler/jobs")
+async def list_jobs():
+    return {"ok": True, "jobs": scheduler.list_jobs()}
+
+@app.get("/scheduler/jobs/{job_id}")
+async def get_job(job_id: str):
+    job = scheduler.get_job(job_id)
+    if not job:
+        return {"ok": False, "error": "job not found"}
+    return {"ok": True, "job": job}
+
+@app.patch("/scheduler/jobs/{job_id}")
+async def update_job(job_id: str, req: JobUpdateRequest):
+    updates = {k: v for k, v in req.dict().items() if v is not None}
+    if "enabled" in updates:
+        updates["enabled"] = int(updates["enabled"])
+    job = scheduler.update_job(job_id, **updates)
+    if not job:
+        return {"ok": False, "error": "job not found"}
+    return {"ok": True, "job": job}
+
+@app.delete("/scheduler/jobs/{job_id}")
+async def delete_job(job_id: str):
+    if not scheduler.delete_job(job_id):
+        return {"ok": False, "error": "job not found"}
+    return {"ok": True}
 
 
 if __name__ == "__main__":
