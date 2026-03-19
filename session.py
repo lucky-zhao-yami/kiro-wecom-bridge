@@ -224,6 +224,60 @@ class KiroProcess:
             finally:
                 self._pending.pop(mid, None)
 
+    async def send_multimodal(self, content: list[dict], on_chunk=None, timeout: float = 300) -> str:
+        """发送多模态内容（文本+图片），content 是 ACP prompt content 数组"""
+        async with self._lock:
+            if self._first_msg:
+                self._first_msg = False
+                from guard import get_preamble
+                preamble = get_preamble(self._mode)
+                summary = _load_summary(self._session_dir)
+                prefix = preamble
+                if summary:
+                    prefix += f"[上次会话摘要]\n{summary}\n\n---\n"
+                    log.info("注入会话摘要 chatid=%s len=%d mode=%s", self._chatid, len(summary), self._mode)
+                # 在第一个 text 元素前注入 preamble
+                for item in content:
+                    if item.get("type") == "text":
+                        item["text"] = prefix + f"[chatid={self._chatid}]\n" + item["text"]
+                        break
+
+            self._full_text = ""
+            self._chunk_queue = asyncio.Queue()
+            mid = await self._send_rpc("session/prompt", {
+                "sessionId": self._session_id,
+                "prompt": content,
+            })
+            try:
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + timeout
+                while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    chunk = await asyncio.wait_for(self._chunk_queue.get(), timeout=remaining)
+                    if chunk is None:
+                        break
+                    if on_chunk:
+                        await on_chunk(chunk)
+                self._last_active = time.monotonic()
+                user_desc = "[图片消息]"
+                for item in content:
+                    if item.get("type") == "text":
+                        user_desc = item["text"][:200]
+                        break
+                self._history.append({"user": user_desc, "assistant": self._full_text})
+                _append_history(self._session_dir, user_desc, self._full_text)
+                return self._full_text
+            except asyncio.TimeoutError:
+                log.warning("prompt 超时 chatid=%s", self._chatid)
+                return "⏰ 回复超时，请稍后重试"
+            except RuntimeError as e:
+                log.error("ACP 进程异常 chatid=%s: %s", self._chatid, e)
+                return f"❌ ACP 进程异常: {e}"
+            finally:
+                self._pending.pop(mid, None)
+
     async def _send_rpc(self, method: str, params: dict) -> int:
         self._msg_id += 1
         mid = self._msg_id

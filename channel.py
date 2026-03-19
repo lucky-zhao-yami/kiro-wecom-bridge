@@ -1,5 +1,5 @@
 """Channel: 每个企微机器人一个独立 Channel — chatid 路由 + 流式分段"""
-import asyncio, json, logging, os, uuid
+import asyncio, base64, json, logging, os, uuid
 
 from ws_client import WsClient
 from session import ProcessPool
@@ -108,8 +108,15 @@ class Channel:
             chatid = f"dm_{userid}"
         log.info("收到消息 req=%s chatid=%s userid=%s type=%s", req_id, chatid, userid, msgtype)
 
+        if msgtype == "image":
+            media_id = body.get("image", {}).get("media_id", "")
+            if not media_id:
+                return
+            asyncio.create_task(self._process_image(req_id, chatid, userid, media_id))
+            return
+
         if msgtype != "text":
-            await self.ws.send_stream(req_id, uuid.uuid4().hex[:16], "暂不支持该消息类型，请发送文本消息。", finish=True)
+            await self.ws.send_stream(req_id, uuid.uuid4().hex[:16], "暂不支持该消息类型，请发送文本或图片。", finish=True)
             return
 
         text = body.get("text", {}).get("content", "").strip()
@@ -131,6 +138,42 @@ class Channel:
 
         stream_id = uuid.uuid4().hex[:16]
         asyncio.create_task(self._process_and_reply(req_id, stream_id, chatid, text))
+
+    async def _process_image(self, req_id: str, chatid: str, userid: str, media_id: str):
+        """下载企微图片 → base64 → 发给 kiro ACP"""
+        stream_id = uuid.uuid4().hex[:16]
+        try:
+            img_data = await self.ws.get_media(media_id)
+            if not img_data:
+                await self.ws.send_stream(req_id, stream_id, "❌ 图片下载失败，请重试。", finish=True)
+                return
+            img_b64 = base64.b64encode(img_data).decode()
+            # 根据文件头判断 media_type
+            media_type = "image/png"
+            if img_data[:3] == b'\xff\xd8\xff':
+                media_type = "image/jpeg"
+            elif img_data[:4] == b'GIF8':
+                media_type = "image/gif"
+            elif img_data[:4] == b'RIFF' and img_data[8:12] == b'WEBP':
+                media_type = "image/webp"
+
+            prompt_content = [
+                {"type": "text", "text": f"[{userid}]: [发送了一张图片，请描述图片内容并回答相关问题]"},
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_b64}},
+            ]
+            log.info("图片消息 chatid=%s size=%dKB type=%s", chatid, len(img_data) // 1024, media_type)
+
+            chat_cfg = self._get_chat_config(chatid)
+            agent = chat_cfg.get("agent")
+            cwd = chat_cfg.get("cwd", WORK_DIR)
+            mode = chat_cfg.get("mode", "full")
+            seg = StreamSegmenter(self.ws, req_id, stream_id)
+            proc = await self.pool.get_or_create(chatid, agent=agent, cwd=cwd, mode=mode)
+            await proc.send_multimodal(prompt_content, on_chunk=seg.feed)
+            await seg.finish()
+        except Exception as e:
+            log.error("图片处理异常 req=%s: %s", req_id, e)
+            await self.ws.send_stream(req_id, stream_id, f"❌ 图片处理异常: {e}", finish=True)
 
     async def _process_and_reply(self, req_id: str, stream_id: str, chatid: str, text: str):
         chat_cfg = self._get_chat_config(chatid)

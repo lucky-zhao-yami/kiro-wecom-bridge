@@ -135,6 +135,41 @@ class WsClient:
             "body": {"msgtype": "text", "text": {"content": text}},
         })
 
+    async def get_media(self, media_id: str, timeout: float = 30) -> bytes | None:
+        """通过 aibot_get_media 下载媒体文件，返回原始字节"""
+        rid = _req_id()
+        await self._send_raw({
+            "cmd": "aibot_get_media",
+            "headers": {"req_id": rid},
+            "body": {"media_id": media_id},
+        })
+        try:
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=timeout)
+            # 企微返回的可能是 JSON（错误）或二进制（文件内容）
+            if isinstance(raw, bytes):
+                # 检查是否是 JSON 错误响应
+                try:
+                    resp = json.loads(raw)
+                    if resp.get("errcode", 0) != 0:
+                        log.error("get_media 失败: %s", resp)
+                        return None
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return raw  # 真正的二进制数据
+            else:
+                resp = json.loads(raw)
+                if resp.get("errcode", 0) != 0:
+                    log.error("get_media 失败: %s", resp)
+                    return None
+                # 有些版本返回 base64 编码的 data
+                import base64
+                data = resp.get("body", {}).get("data", "")
+                if data:
+                    return base64.b64decode(data)
+            return None
+        except asyncio.TimeoutError:
+            log.error("get_media 超时 media_id=%s", media_id)
+            return None
+
     async def send_msg(self, chatid: str, chat_type: int, content: str):
         """主动推送 aibot_send_msg (markdown)
         chat_type=1 私聊时 chatid 传 userid（去掉 dm_ 前缀）
