@@ -136,12 +136,16 @@ class WsClient:
         })
 
     async def send_msg(self, chatid: str, chat_type: int, content: str):
-        """主动推送 aibot_send_msg (markdown)"""
+        """主动推送 aibot_send_msg (markdown)
+        chat_type=1 私聊时 chatid 传 userid（去掉 dm_ 前缀）
+        chat_type=2 群聊时 chatid 直接传
+        """
+        actual_id = chatid.removeprefix("dm_") if chat_type == 1 else chatid
         await self._send_raw({
             "cmd": "aibot_send_msg",
             "headers": {"req_id": _req_id()},
             "body": {
-                "chatid": chatid,
+                "chatid": actual_id,
                 "chat_type": chat_type,
                 "msgtype": "markdown",
                 "markdown": {"content": content},
