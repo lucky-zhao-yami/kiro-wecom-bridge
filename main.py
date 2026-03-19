@@ -86,7 +86,7 @@ async def cron_trigger(req: CronTriggerRequest):
     agent = chat_cfg.get("agent")
     cwd = chat_cfg.get("cwd", os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all"))
     try:
-        proc = await ch.pool.get_or_create(req.chatid, agent=agent, cwd=cwd)
+        proc = await ch.pool.get_or_create(req.chatid, agent=agent, cwd=cwd, mode="full")
         reply = await proc.send(f"[cron]: {req.prompt}", timeout=300)
         chat_type = 1 if req.chatid.startswith("dm_") else 2
         await ch.ws.send_msg(req.chatid, chat_type, reply)

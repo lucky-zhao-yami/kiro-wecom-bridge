@@ -115,11 +115,12 @@ def _format_history(history: list[dict]) -> str:
 class KiroProcess:
     """单个 kiro-cli ACP 进程"""
 
-    def __init__(self, chatid: str, session_dir: str, agent: str | None, cwd: str):
+    def __init__(self, chatid: str, session_dir: str, agent: str | None, cwd: str, mode: str = "full"):
         self._chatid = chatid
         self._session_dir = session_dir
         self._agent = agent
         self._cwd = cwd
+        self._mode = mode
         self._proc: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._last_active: float = 0
@@ -178,13 +179,14 @@ class KiroProcess:
             actual_text = text
             if self._first_msg:
                 self._first_msg = False
-                from guard import SAFETY_PREAMBLE
+                from guard import get_preamble
+                preamble = get_preamble(self._mode)
                 summary = _load_summary(self._session_dir)
                 if summary:
-                    actual_text = f"{SAFETY_PREAMBLE}[上次会话摘要]\n{summary}\n\n---\n[chatid={self._chatid}]\n{text}"
-                    log.info("注入会话摘要 chatid=%s len=%d", self._chatid, len(summary))
+                    actual_text = f"{preamble}[上次会话摘要]\n{summary}\n\n---\n[chatid={self._chatid}]\n{text}"
+                    log.info("注入会话摘要 chatid=%s len=%d mode=%s", self._chatid, len(summary), self._mode)
                 else:
-                    actual_text = f"{SAFETY_PREAMBLE}[chatid={self._chatid}]\n{text}"
+                    actual_text = f"{preamble}[chatid={self._chatid}]\n{text}"
 
             self._full_text = ""
             self._chunk_queue = asyncio.Queue()
@@ -402,7 +404,7 @@ class ProcessPool:
     def __init__(self):
         self._pool: OrderedDict[str, KiroProcess] = OrderedDict()
 
-    async def get_or_create(self, chatid: str, agent: str | None = None, cwd: str | None = None) -> KiroProcess:
+    async def get_or_create(self, chatid: str, agent: str | None = None, cwd: str | None = None, mode: str = "full") -> KiroProcess:
         if chatid in self._pool:
             proc = self._pool[chatid]
             if proc.alive:
@@ -415,7 +417,7 @@ class ProcessPool:
 
         session_dir = os.path.join(SESSIONS_DIR, chatid)
         effective_cwd = cwd or WORK_DIR
-        proc = KiroProcess(chatid, session_dir, agent, effective_cwd)
+        proc = KiroProcess(chatid, session_dir, agent, effective_cwd, mode=mode)
         await proc.start()
         self._pool[chatid] = proc
         return proc

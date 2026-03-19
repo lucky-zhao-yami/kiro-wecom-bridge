@@ -136,9 +136,10 @@ class Channel:
         chat_cfg = self._get_chat_config(chatid)
         agent = chat_cfg.get("agent")
         cwd = chat_cfg.get("cwd", WORK_DIR)
+        mode = chat_cfg.get("mode", "full")
         seg = StreamSegmenter(self.ws, req_id, stream_id)
         try:
-            proc = await self.pool.get_or_create(chatid, agent=agent, cwd=cwd)
+            proc = await self.pool.get_or_create(chatid, agent=agent, cwd=cwd, mode=mode)
             await proc.send(text, on_chunk=seg.feed)
             await seg.finish()
         except Exception as e:
