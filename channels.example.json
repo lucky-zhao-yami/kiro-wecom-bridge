@@ -1,12 +1,11 @@
 [
   {
-    "bot_id": "YOUR_BOT_ID",
-    "secret": "YOUR_SECRET",
+    "bot_id": "your_bot_id",
+    "secret": "your_secret",
     "welcome_msg": "👋 你好！我是 Kiro AI 助手，有什么可以帮你的？",
     "chats": {
-      "default": {"agent": null, "cwd": "/path/to/workspace"},
-      "CHAT_ID_DEV": {"agent": null, "cwd": "/path/to/workspace"},
-      "CHAT_ID_ALERT": {"agent": "alert-advisor", "cwd": "/path/to/workspace", "alert": true}
+      "default": {"agent": null, "cwd": "/mnt/d/workspace/all", "mode": "safe"},
+      "dm_YourUserId": {"agent": null, "cwd": "/mnt/d/workspace/all", "mode": "full"}
     }
   }
 ]
