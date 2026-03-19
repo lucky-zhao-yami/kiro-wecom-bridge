@@ -52,6 +52,27 @@ class CronTriggerRequest(BaseModel):
     bot_index: int = 0  # 多机器人时指定用哪个 channel，默认第一个
 
 
+class SendMsgRequest(BaseModel):
+    chatid: str
+    content: str
+    bot_index: int = 0
+    chat_type: int = 2  # 1=单聊 2=群聊
+
+
+@app.post("/send")
+async def send_msg(req: SendMsgRequest):
+    """主动发送消息到企微（供 notify-wecom 等 skill 调用）"""
+    if req.bot_index >= len(cm.channels):
+        return {"ok": False, "error": f"bot_index {req.bot_index} 超出范围"}
+    ch = cm.channels[req.bot_index]
+    try:
+        await ch.ws.send_msg(req.chatid, req.chat_type, req.content)
+        return {"ok": True}
+    except Exception as e:
+        log.error("send_msg 异常 chatid=%s: %s", req.chatid, e)
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/cron/trigger")
 async def cron_trigger(req: CronTriggerRequest):
     """供 crontab 调用：向指定群发送 prompt，结果推送回企微"""
