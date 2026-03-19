@@ -298,6 +298,81 @@ POST http://localhost:8900/cron/trigger
 
 Kiro 执行 prompt 并将结果主动推送到对应的企微聊天。
 
+## Skills（Kiro 技能）
+
+项目自带 3 个 Kiro skill，位于 `skills/` 目录。安装后 Kiro 可以在对话中自动调用。
+
+### 安装方式
+
+将 skill 目录复制（或软链接）到你的 Kiro workspace 的 `.kiro/skills/` 下：
+
+```bash
+# 假设 workspace 在 /mnt/d/workspace/all
+WORKSPACE=/mnt/d/workspace/all
+BRIDGE=/mnt/d/code/yami/kiro-wecom-bridge
+
+# 方式一：软链接（推荐，bridge 更新后自动生效）
+ln -sf $BRIDGE/skills/wecom-memory $WORKSPACE/.kiro/skills/wecom-memory
+ln -sf $BRIDGE/skills/wecom-scheduler $WORKSPACE/.kiro/skills/wecom-scheduler
+ln -sf $BRIDGE/skills/notify-wecom $WORKSPACE/.kiro/skills/notify-wecom
+
+# 方式二：直接复制
+cp -r $BRIDGE/skills/* $WORKSPACE/.kiro/skills/
+```
+
+### wecom-memory — 长期记忆
+
+让 Kiro 拥有跨会话的持久记忆。每个 chatid 独立的 SQLite 知识图谱。
+
+**Kiro 会自动**：
+- 收到消息时搜索记忆，获取相关上下文
+- 对话中产生新知识时主动保存（人员、项目、决策、偏好等）
+- 检测到记忆冲突时询问用户并更新
+
+**支持的操作**：
+- `search` — 搜索记忆（FTS5 全文 + 向量语义）
+- `save_entity` — 保存/更新实体（person/service/project/tool/config/decision/preference）
+- `save_relation` — 保存实体间关系
+- `get_history` — 查看实体变更历史
+
+**手动测试**：
+
+```bash
+source .venv/bin/activate
+
+# 搜索
+MEMORY_CHATID=test python3 memory_cli.py search '{"query": "订单服务"}'
+
+# 保存实体
+MEMORY_CHATID=test python3 memory_cli.py save_entity '{"type":"person","name":"张三","description":"后端开发，负责订单服务"}'
+
+# 保存关系
+MEMORY_CHATID=test python3 memory_cli.py save_relation '{"from_name":"张三","relation":"负责","to_name":"ec-so-service"}'
+```
+
+### wecom-scheduler — 定时任务
+
+让 Kiro 通过对话创建/管理定时任务。用户说"每天9点检查OP待办"，Kiro 自动调用 API 创建。
+
+详见上方 [定时任务](#定时任务) 章节。
+
+### notify-wecom — 消息通知
+
+让 Kiro 主动向企微推送消息（不需要用户先发消息）。
+
+```bash
+curl -s -X POST http://localhost:8900/send \
+  -H "Content-Type: application/json" \
+  -d '{"chatid": "dm_YourUserId", "content": "任务完成通知"}'
+```
+
+| 参数 | 说明 | 默认 |
+|------|------|------|
+| `chatid` | 目标 chatid（私聊用 `dm_用户ID`，群聊用群 chatid） | `dm_ZhaoXingPing` |
+| `content` | 消息内容，支持企微 markdown | — |
+| `chat_type` | 1=单聊 2=群聊 | 1 |
+| `bot_index` | 多机器人时指定 channel | 0 |
+
 ## 项目结构
 
 ```
