@@ -113,7 +113,8 @@ class MemoryDB:
         if self._has_vec and self._has_embed and description:
             try:
                 emb = _embed(description)
-                self._conn.execute("INSERT OR REPLACE INTO entities_vec(id, embedding) VALUES (?, ?)", (entity_id, emb))
+                self._conn.execute("DELETE FROM entities_vec WHERE id=?", (entity_id,))
+                self._conn.execute("INSERT INTO entities_vec(id, embedding) VALUES (?, ?)", (entity_id, emb))
             except Exception as e:
                 log.warning("向量写入失败: %s", e)
 
@@ -128,15 +129,23 @@ class MemoryDB:
 
         if existing:
             old_ver = existing["version"]
+            # FTS delete 必须在 UPDATE 之前，用旧数据匹配
+            old_row = self._conn.execute("SELECT rowid, name, description, properties FROM entities WHERE id=?", (entity_id,)).fetchone()
             self._conn.execute(
                 "INSERT OR REPLACE INTO entity_versions (entity_id, version, description, properties, changed_at, reason) VALUES (?,?,?,?,?,?)",
                 (entity_id, old_ver, existing["description"], existing["properties"], now, reason)
             )
+            if old_row:
+                try:
+                    self._conn.execute("INSERT INTO entities_fts(entities_fts, rowid, name, description, properties) VALUES('delete', ?, ?, ?, ?)",
+                                       (old_row["rowid"], old_row["name"], old_row["description"], old_row["properties"]))
+                except Exception:
+                    pass
             self._conn.execute(
                 "UPDATE entities SET description=?, properties=?, version=?, updated_at=?, source_chatid=? WHERE id=?",
                 (description, props_json, old_ver + 1, now, source_chatid, entity_id)
             )
-            self._fts_sync(entity_id)
+            self._fts_insert(entity_id)
         else:
             self._conn.execute(
                 "INSERT INTO entities (id, type, name, description, properties, version, updated_at, source_chatid) VALUES (?,?,?,?,?,1,?,?)",
