@@ -3,6 +3,7 @@ import asyncio, json, logging, os, uuid
 
 from ws_client import WsClient
 from session import ProcessPool
+from guard import check_injection
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +119,13 @@ class Channel:
         if text.startswith("@"):
             parts = text.split(None, 1)
             text = parts[1] if len(parts) > 1 else text
+
+        # 注入检测
+        hit = check_injection(text)
+        if hit:
+            log.warning("拦截注入 chatid=%s userid=%s pattern=%s", chatid, userid, hit)
+            await self.ws.send_stream(req_id, uuid.uuid4().hex[:16], "⚠️ 检测到异常指令，已拦截。", finish=True)
+            return
 
         text = f"[{userid}]: {text}"
 

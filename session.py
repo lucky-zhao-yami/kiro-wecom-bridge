@@ -174,16 +174,17 @@ class KiroProcess:
 
     async def send(self, text: str, on_chunk=None, timeout: float = 300) -> str:
         async with self._lock:
-            # 第一条消息时注入上次摘要
+            # 第一条消息时注入上次摘要 + 安全规则
             actual_text = text
             if self._first_msg:
                 self._first_msg = False
+                from guard import SAFETY_PREAMBLE
                 summary = _load_summary(self._session_dir)
                 if summary:
-                    actual_text = f"[上次会话摘要]\n{summary}\n\n---\n[chatid={self._chatid}]\n{text}"
+                    actual_text = f"{SAFETY_PREAMBLE}[上次会话摘要]\n{summary}\n\n---\n[chatid={self._chatid}]\n{text}"
                     log.info("注入会话摘要 chatid=%s len=%d", self._chatid, len(summary))
                 else:
-                    actual_text = f"[chatid={self._chatid}]\n{text}"
+                    actual_text = f"{SAFETY_PREAMBLE}[chatid={self._chatid}]\n{text}"
 
             self._full_text = ""
             self._chunk_queue = asyncio.Queue()
