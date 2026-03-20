@@ -207,8 +207,13 @@ class Channel:
                 {"msg_item": [{"msgtype": "voice", "voice": body.get("voice", {})}]}))
             return
 
+        if msgtype == "file":
+            asyncio.create_task(self._process_mixed(req_id, chatid, userid,
+                {"msg_item": [{"msgtype": "file", "file": body.get("file", {})}]}))
+            return
+
         if msgtype != "text":
-            await self.ws.send_stream(req_id, uuid.uuid4().hex[:16], "暂不支持该消息类型，请发送文本或图片。", finish=True)
+            await self.ws.send_stream(req_id, uuid.uuid4().hex[:16], "暂不支持该消息类型，请发送文本、图片、语音或文件。", finish=True)
             return
 
         text = body.get("text", {}).get("content", "").strip()
@@ -270,6 +275,10 @@ class Channel:
                     transcript = await self._process_voice(chatid, item.get("voice", {}))
                     if transcript:
                         text_parts.append(transcript)
+                elif item_type == "file":
+                    file_path = await self._process_file(chatid, item.get("file", {}))
+                    if file_path:
+                        image_paths.append(file_path)  # 复用 image_paths 作为附件路径列表
 
             if not image_paths and not text_parts:
                 return
@@ -284,12 +293,17 @@ class Channel:
                     return
 
             if image_paths and not combined_text:
-                combined_text = "请描述这张图片的内容"
+                combined_text = "请查看附件内容"
 
             # 构造 prompt
             if image_paths:
-                img_hint = "\n".join(f"[图片文件: {p}]" for p in image_paths)
-                prompt_text = f"[{userid}]: {combined_text}\n\n{img_hint}\n\n请先用 fs_read 工具的 Image 模式读取上述图片文件，然后回答用户的问题。"
+                hints = []
+                for p in image_paths:
+                    if any(p.endswith(e) for e in (".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                        hints.append(f"[图片文件: {p}]（请用 fs_read Image 模式读取）")
+                    else:
+                        hints.append(f"[文件: {p}]（请用 fs_read 读取内容）")
+                prompt_text = f"[{userid}]: {combined_text}\n\n" + "\n".join(hints)
             else:
                 prompt_text = f"[{userid}]: {combined_text}"
 
@@ -355,6 +369,23 @@ class Channel:
             f.write(data)
         log.info("语音已保存 chatid=%s path=%s size=%dKB", chatid, audio_path, len(data) // 1024)
         return await self._transcribe_audio(audio_path)
+
+    async def _process_file(self, chatid: str, file_info: dict) -> str | None:
+        """下载文件并保存到本地，返回文件路径"""
+        filename = file_info.get("filename", "unknown")
+        data = await self._download_media(file_info)
+        if not data:
+            log.error("文件下载失败 chatid=%s filename=%s", chatid, filename)
+            return None
+        # 保留原始文件名
+        save_dir = os.path.join(WORK_DIR, "wecom-sessions", chatid, "files")
+        os.makedirs(save_dir, exist_ok=True)
+        safe_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+        path = os.path.join(save_dir, safe_name)
+        with open(path, "wb") as f:
+            f.write(data)
+        log.info("文件已保存 chatid=%s path=%s size=%dKB", chatid, path, len(data) // 1024)
+        return path
 
     async def _transcribe_audio(self, audio_path: str) -> str | None:
         """调用 FunASR HTTP API 进行语音识别"""
