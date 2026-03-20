@@ -14,6 +14,7 @@ WORK_DIR = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
 STREAM_SEGMENT_LIMIT = 1500
 FLUSH_INTERVAL = 0.3
 MSG_AGGREGATE_WINDOW = 3.0  # 消息聚合窗口（秒）
+FUNASR_URL = os.getenv("FUNASR_URL", "http://localhost:10095")
 
 
 def _detect_media_type(data: bytes) -> str:
@@ -33,8 +34,8 @@ def _is_image(data: bytes) -> bool:
             (data[:4] == b'RIFF' and len(data) > 12 and data[8:12] == b'WEBP'))
 
 
-def _aes_decrypt_image(enc_data: bytes, aeskey: str) -> bytes | None:
-    """尝试用企微 aeskey 解密图片数据"""
+def _aes_decrypt(enc_data: bytes, aeskey: str) -> bytes | None:
+    """用企微 aeskey AES-256-CBC 解密数据"""
     try:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         key = base64.b64decode(aeskey + '=' * (4 - len(aeskey) % 4) if len(aeskey) % 4 else aeskey)
@@ -45,18 +46,25 @@ def _aes_decrypt_image(enc_data: bytes, aeskey: str) -> bytes | None:
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
         dec = cipher.decryptor()
         plain = dec.update(enc_data) + dec.finalize()
-        # 去 PKCS7 padding（手动，因为可能不标准）
         pad = plain[-1]
         if 1 <= pad <= 32 and plain[-pad:] == bytes([pad]) * pad:
             plain = plain[:-pad]
-        # 搜索图片 magic bytes
-        for offset in range(min(64, len(plain))):
-            if _is_image(plain[offset:]):
-                log.info("AES 解密成功 offset=%d size=%d", offset, len(plain) - offset)
-                return plain[offset:]
-        log.warning("AES 解密后未找到图片 magic, first16=%s", plain[:16].hex())
+        return plain
     except Exception as e:
         log.error("AES 解密失败: %s", e)
+    return None
+
+
+def _aes_decrypt_image(enc_data: bytes, aeskey: str) -> bytes | None:
+    """解密图片数据，搜索图片 magic bytes"""
+    plain = _aes_decrypt(enc_data, aeskey)
+    if not plain:
+        return None
+    for offset in range(min(64, len(plain))):
+        if _is_image(plain[offset:]):
+            log.info("AES 解密图片成功 offset=%d size=%d", offset, len(plain) - offset)
+            return plain[offset:]
+    log.warning("AES 解密后未找到图片 magic, first16=%s", plain[:16].hex())
     return None
 
 
@@ -190,14 +198,13 @@ class Channel:
             return
 
         if msgtype == "image":
-            media_id = body.get("image", {}).get("media_id", "")
-            url = body.get("image", {}).get("url", "")
-            if url:
-                asyncio.create_task(self._process_mixed(req_id, chatid, userid,
-                    {"msg_item": [{"msgtype": "image", "image": {"url": url}}]}))
-            elif media_id:
-                asyncio.create_task(self._process_mixed(req_id, chatid, userid,
-                    {"msg_item": [{"msgtype": "image", "image": {"media_id": media_id}}]}))
+            asyncio.create_task(self._process_mixed(req_id, chatid, userid,
+                {"msg_item": [{"msgtype": "image", "image": body.get("image", {})}]}))
+            return
+
+        if msgtype == "voice":
+            asyncio.create_task(self._process_mixed(req_id, chatid, userid,
+                {"msg_item": [{"msgtype": "voice", "voice": body.get("voice", {})}]}))
             return
 
         if msgtype != "text":
@@ -244,7 +251,7 @@ class Channel:
         return None
 
     async def _process_mixed(self, req_id: str, chatid: str, userid: str, mixed: dict):
-        """处理 mixed 消息（文本+图片混合）或单独的图片消息"""
+        """处理 mixed 消息（文本+图片+语音混合）"""
         stream_id = uuid.uuid4().hex[:16]
         try:
             text_parts = []
@@ -255,31 +262,14 @@ class Channel:
                 if item_type == "text":
                     text_parts.append(item.get("text", {}).get("content", ""))
                 elif item_type == "image":
-                    img_info = item.get("image", {})
-                    img_data = None
-                    url = img_info.get("url", "")
-                    if url:
-                        img_data = await self._download_image(url)
-                        # 如果下载的不是图片格式，尝试 AES 解密
-                        if img_data and not _is_image(img_data):
-                            aeskey = img_info.get("aeskey", "")
-                            if aeskey:
-                                img_data = _aes_decrypt_image(img_data, aeskey)
-                    if not img_data:
-                        media_id = img_info.get("media_id", "")
-                        if media_id:
-                            img_data = await self.ws.get_media(media_id)
-                    if img_data:
-                        # 保存到临时文件
-                        ext = {"image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}.get(
-                            _detect_media_type(img_data), ".png")
-                        img_dir = os.path.join(WORK_DIR, "wecom-sessions", chatid, "images")
-                        os.makedirs(img_dir, exist_ok=True)
-                        img_path = os.path.join(img_dir, f"{uuid.uuid4().hex[:8]}{ext}")
-                        with open(img_path, "wb") as f:
-                            f.write(img_data)
+                    img_path = await self._download_and_save_media(
+                        chatid, item.get("image", {}), "images")
+                    if img_path:
                         image_paths.append(img_path)
-                        log.info("图片已保存 chatid=%s path=%s size=%dKB", chatid, img_path, len(img_data) // 1024)
+                elif item_type == "voice":
+                    transcript = await self._process_voice(chatid, item.get("voice", {}))
+                    if transcript:
+                        text_parts.append(transcript)
 
             if not image_paths and not text_parts:
                 return
@@ -296,7 +286,7 @@ class Channel:
             if image_paths and not combined_text:
                 combined_text = "请描述这张图片的内容"
 
-            # 构造 prompt：文本 + 图片路径提示
+            # 构造 prompt
             if image_paths:
                 img_hint = "\n".join(f"[图片文件: {p}]" for p in image_paths)
                 prompt_text = f"[{userid}]: {combined_text}\n\n{img_hint}\n\n请先用 fs_read 工具的 Image 模式读取上述图片文件，然后回答用户的问题。"
@@ -313,6 +303,81 @@ class Channel:
         except Exception as e:
             log.error("mixed 处理异常 req=%s: %s", req_id, e)
             await self.ws.send_stream(req_id, stream_id, f"❌ 处理异常: {e}", finish=True)
+
+    async def _download_media(self, media_info: dict) -> bytes | None:
+        """下载企微媒体文件（URL优先，回退 media_id），自动 AES 解密"""
+        data = None
+        url = media_info.get("url", "")
+        if url:
+            data = await self._download_image(url)
+            if data and not _is_image(data):
+                aeskey = media_info.get("aeskey", "")
+                if aeskey:
+                    decrypted = _aes_decrypt(data, aeskey)
+                    if decrypted:
+                        data = decrypted
+        if not data:
+            media_id = media_info.get("media_id", "")
+            if media_id:
+                data = await self.ws.get_media(media_id)
+        return data
+
+    async def _download_and_save_media(self, chatid: str, media_info: dict, subdir: str) -> str | None:
+        """下载媒体文件并保存到本地，返回文件路径"""
+        data = await self._download_media(media_info)
+        if not data:
+            return None
+        ext = {"image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}.get(
+            _detect_media_type(data), ".png") if subdir == "images" else ".audio"
+        save_dir = os.path.join(WORK_DIR, "wecom-sessions", chatid, subdir)
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, f"{uuid.uuid4().hex[:8]}{ext}")
+        with open(path, "wb") as f:
+            f.write(data)
+        log.info("媒体已保存 chatid=%s path=%s size=%dKB", chatid, path, len(data) // 1024)
+        return path
+
+    async def _process_voice(self, chatid: str, voice_info: dict) -> str | None:
+        """下载语音 → 保存 → FunASR 转文字"""
+        data = await self._download_media(voice_info)
+        if not data:
+            log.error("语音下载失败 chatid=%s", chatid)
+            return None
+        # 保存音频文件
+        save_dir = os.path.join(WORK_DIR, "wecom-sessions", chatid, "voice")
+        os.makedirs(save_dir, exist_ok=True)
+        audio_path = os.path.join(save_dir, f"{uuid.uuid4().hex[:8]}.audio")
+        with open(audio_path, "wb") as f:
+            f.write(data)
+        log.info("语音已保存 chatid=%s path=%s size=%dKB", chatid, audio_path, len(data) // 1024)
+        # 调 FunASR 识别
+        return await self._transcribe_audio(audio_path)
+
+    async def _transcribe_audio(self, audio_path: str) -> str | None:
+        """调用 FunASR HTTP API 进行语音识别"""
+        try:
+            with open(audio_path, "rb") as f:
+                audio_data = f.read()
+            audio_b64 = base64.b64encode(audio_data).decode()
+            payload = {
+                "audio": audio_b64,
+                "language": "auto",
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{FUNASR_URL}/api/v1/asr",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        text = result.get("text", "")
+                        log.info("语音识别成功 path=%s text=%s", audio_path, text[:100])
+                        return text if text else None
+                    log.error("语音识别失败 status=%d", resp.status)
+        except Exception as e:
+            log.error("语音识别异常: %s", e)
+        return None
 
     async def _process_and_reply(self, req_id: str, stream_id: str, chatid: str, text: str):
         chat_cfg = self._get_chat_config(chatid)
