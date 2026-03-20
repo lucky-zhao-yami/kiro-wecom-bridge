@@ -112,7 +112,7 @@ sudo apt install -y python3 python3-pip python3-venv git curl unzip
 
 ```bash
 # 下载安装 kiro-cli
-curl -fsSL https://kiro.dev/install.sh | bash
+curl -fsSL https://cli.kiro.dev/install | bash
 
 # 验证安装
 kiro-cli --version
