@@ -338,19 +338,22 @@ class Channel:
         return path
 
     async def _process_voice(self, chatid: str, voice_info: dict) -> str | None:
-        """下载语音 → 保存 → FunASR 转文字"""
+        """处理语音消息 — 优先用企微自带的转文字结果"""
+        content = voice_info.get("content", "").strip()
+        if content:
+            log.info("语音转文字(企微) chatid=%s text=%s", chatid, content[:100])
+            return content
+        # 企微未提供转文字结果，尝试下载+FunASR
         data = await self._download_media(voice_info)
         if not data:
             log.error("语音下载失败 chatid=%s", chatid)
             return None
-        # 保存音频文件
         save_dir = os.path.join(WORK_DIR, "wecom-sessions", chatid, "voice")
         os.makedirs(save_dir, exist_ok=True)
         audio_path = os.path.join(save_dir, f"{uuid.uuid4().hex[:8]}.audio")
         with open(audio_path, "wb") as f:
             f.write(data)
         log.info("语音已保存 chatid=%s path=%s size=%dKB", chatid, audio_path, len(data) // 1024)
-        # 调 FunASR 识别
         return await self._transcribe_audio(audio_path)
 
     async def _transcribe_audio(self, audio_path: str) -> str | None:
