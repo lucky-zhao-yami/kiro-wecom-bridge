@@ -19,6 +19,37 @@
 - Worker 独立执行，完成后更新 tasks.json
 - 适合：独立任务并行执行
 
+## Delegate 详细设计
+
+### 架构
+
+```
+bridge 内部
+
+DelegateSession (per chatid)
+├── tasks.json                # 任务清单
+├── Main Agent (ACP 进程)     # 对话 + 分发任务
+├── Worker-0 (ACP 进程)       # 执行长任务
+├── Worker-1 (ACP 进程)       # 执行长任务
+└── Worker-2 (ACP 进程)       # 执行长任务（上限 3 个）
+```
+
+### 工作流程
+
+1. 用户发消息 → 主 Agent 处理
+2. 主 Agent 判断是长任务 → fs_write 写入 tasks.json（status=pending）
+3. bridge 内部 TaskDispatcher 检测到新任务 → 分配空闲 Worker
+4. Worker 执行任务，定期更新 tasks.json（progress）
+5. Worker 完成 → 更新 tasks.json（status=done, result=...）
+6. 主 Agent 下次被问到时 fs_read tasks.json 查看结果
+7. 或 bridge 检测到任务完成 → 通过企微推送通知用户
+
+### Worker 生命周期
+
+- 按需创建，空闲 10 分钟后回收
+- 无指定 agent，使用默认 kiro 能力
+- 共享主 Agent 的 workspace
+
 ### 3. GroupChat（协作模式）
 - 多 ACP 进程，每个 Agent 有独立角色（Architect/Coder/Reviewer/...）
 - 共享消息列表（shared_messages.jsonl）
@@ -135,6 +166,44 @@ ChatRoom (per chatid)
 - Agent 执行失败：自动重试 1 次
 - 重试仍失败：Manager @Human 通知，等待指示
 - Agent 进程崩溃：从预热池重建，重新分配任务
+
+### ChatRoom 生命周期
+
+- **创建时机**：用户发第一条消息时，根据 agent_mode 创建对应的 session 类型
+- **GroupChat 进程启动**：Manager 进程立即启动，工作 Agent 按需启动（Manager 分配任务时才创建）
+- **任务完成后**：工作 Agent 进程保留，等待下一个任务。空闲 30 分钟后回收
+- **ChatRoom 销毁**：所有 Agent 空闲超过 30 分钟，整个 ChatRoom 销毁
+
+### 用户消息路由
+
+- **GroupChat 未激活时**：用户消息直接发给 Manager，Manager 决定是否启动 GroupChat 流程
+- **GroupChat 进行中，用户主动发消息**：
+  - 如果是回复 @Human 的问题 → 写入 shared_messages.jsonl，通知 Manager 继续
+  - 如果是无关消息 → 发给 Manager，Manager 判断是插入当前流程还是单独回复
+- **GroupChat 进行中，用户发"取消"** → Manager 暂停流程，@Human 确认是否终止
+
+### 并行结果汇总
+
+- 广播给多个 Agent 后，**等全部完成**再由 Manager 汇总
+- 单个 Agent 超时（5 分钟无输出）→ 标记该 Agent 失败，其他结果正常汇总
+- Manager 汇总时把所有 Agent 的回复拼接写入 shared_messages.jsonl
+
+### 模式切换
+
+- 支持动态切换：用户可以对主 Agent 说"启动 groupchat 模式"
+- 主 Agent 通过 fs_write 修改 chatid 的运行时配置
+- bridge 检测到配置变化后切换模式
+- 切换时保留对话历史（history.jsonl），新模式可以读取
+
+### 资源限制
+
+| 资源 | 限制 |
+|------|------|
+| 单个 ChatRoom 最大 Agent 数 | 6（1 Manager + 5 工作 Agent） |
+| 系统总 ACP 进程上限 | 20（含预热池） |
+| 预热池大小 | 3（仅 single 模式使用） |
+| Worker 空闲回收时间 | 30 分钟 |
+| ChatRoom 空闲回收时间 | 30 分钟 |
 
 ## Agent 角色定义
 
