@@ -6,6 +6,7 @@ from stream import StreamSegmenter
 from guard import check_injection
 from media import download_media, save_media, is_image, aes_decrypt_image, process_voice, process_file
 from agents.single.session import ProcessPool
+from agents.delegate.session import DelegateSession
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class Channel:
         self.welcome_msg = config.get("welcome_msg", DEFAULT_WELCOME)
         self.ws = WsClient(self.bot_id, config["secret"], self._on_message, self._on_event)
         self.pool = ProcessPool()
+        self._delegates: dict[str, DelegateSession] = {}
         self._chats = config.get("chats", {"default": {"agent": None, "cwd": WORK_DIR}})
 
     def _get_chat_config(self, chatid: str) -> dict:
@@ -157,8 +159,11 @@ class Channel:
                 result = await proc.send(text, on_chunk=seg.feed)
                 if result:
                     await seg.finish()
-            # elif agent_mode == "delegate":
-            #     TODO: Phase 1
+            elif agent_mode == "delegate":
+                session = await self._get_delegate(chatid, chat_cfg)
+                result = await session.send_to_main(text, on_chunk=seg.feed)
+                if result:
+                    await seg.finish()
             # elif agent_mode == "groupchat":
             #     TODO: Phase 2
             else:
@@ -170,6 +175,13 @@ class Channel:
             await self.ws.send_stream(req_id, stream_id, f"❌ 处理异常: {e}", finish=True)
 
     # ---- 事件回调 ----
+
+    async def _get_delegate(self, chatid: str, chat_cfg: dict) -> DelegateSession:
+        if chatid not in self._delegates:
+            session = DelegateSession(chatid, chat_cfg, self.ws)
+            await session.start()
+            self._delegates[chatid] = session
+        return self._delegates[chatid]
 
     async def _on_event(self, req_id: str, body: dict):
         event_type = body.get("event", {}).get("eventtype", "")
