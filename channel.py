@@ -7,6 +7,7 @@ from guard import check_injection
 from media import download_media, save_media, is_image, aes_decrypt_image, process_voice, process_file
 from agents.single.session import ProcessPool
 from agents.delegate.session import DelegateSession
+from agents.groupchat.session import GroupChatSession
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class Channel:
         self.ws = WsClient(self.bot_id, config["secret"], self._on_message, self._on_event)
         self.pool = ProcessPool()
         self._delegates: dict[str, DelegateSession] = {}
+        self._groupchats: dict[str, GroupChatSession] = {}
         self._chats = config.get("chats", {"default": {"agent": None, "cwd": WORK_DIR}})
 
     def _get_chat_config(self, chatid: str) -> dict:
@@ -164,8 +166,12 @@ class Channel:
                 result = await session.send_to_main(text, on_chunk=seg.feed)
                 if result:
                     await seg.finish()
-            # elif agent_mode == "groupchat":
-            #     TODO: Phase 2
+            elif agent_mode == "groupchat":
+                session = await self._get_groupchat(chatid, chat_cfg)
+                result = await session.send_from_human(text, on_chunk=seg.feed)
+                if result:
+                    await seg.finish()
+            # TODO: Phase 2 高级功能（门禁、轮次、进度推送）
             else:
                 await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)
         except asyncio.CancelledError:
@@ -182,6 +188,13 @@ class Channel:
             await session.start()
             self._delegates[chatid] = session
         return self._delegates[chatid]
+
+    async def _get_groupchat(self, chatid: str, chat_cfg: dict) -> GroupChatSession:
+        if chatid not in self._groupchats:
+            session = GroupChatSession(chatid, chat_cfg, self.ws, pool=self.pool)
+            await session.start()
+            self._groupchats[chatid] = session
+        return self._groupchats[chatid]
 
     async def _on_event(self, req_id: str, body: dict):
         event_type = body.get("event", {}).get("eventtype", "")
