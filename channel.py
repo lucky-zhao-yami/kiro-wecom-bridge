@@ -188,12 +188,10 @@ class Channel:
     def _parse_at_command(self, text: str, agent_names: list[str]) -> tuple[str, str] | None:
         """解析 @agent-name 指令，返回 (agent_name, instruction) 或 None"""
         import re
-        m = re.match(r'@(\S+)\s*(.*)', text.strip(), re.DOTALL)
-        if m:
-            name = m.group(1)
-            instruction = m.group(2).strip()
-            if name in agent_names or name == "Human":
-                return name, instruction
+        for name in agent_names + ["Human"]:
+            m = re.search(rf'@{re.escape(name)}\s+(.*)', text, re.DOTALL)
+            if m:
+                return name, m.group(1).strip()
         return None
 
     async def _groupchat_loop(self, chatid: str, chat_cfg: dict, session, manager_reply: str):
