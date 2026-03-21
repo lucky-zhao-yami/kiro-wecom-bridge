@@ -171,9 +171,6 @@ class Channel:
                 result = await session.send_from_human(text, on_chunk=seg.feed)
                 if result:
                     await seg.finish()
-                # 调度循环：解析 Manager 回复中的 @agent 指令
-                if result:
-                    asyncio.create_task(self._groupchat_loop(chatid, chat_cfg, session, result))
             # TODO: Phase 2 高级功能（门禁、轮次、进度推送）
             else:
                 await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)
@@ -184,67 +181,6 @@ class Channel:
             await self.ws.send_stream(req_id, stream_id, f"❌ 处理异常: {e}", finish=True)
 
     # ---- 事件回调 ----
-
-    def _parse_at_command(self, text: str, agent_names: list[str]) -> tuple[str, str] | None:
-        """解析 @agent-name 指令，返回 (agent_name, instruction) 或 None"""
-        import re
-        for name in agent_names + ["Human"]:
-            m = re.search(rf'@{re.escape(name)}\s+(.*)', text, re.DOTALL)
-            if m:
-                return name, m.group(1).strip()
-        return None
-
-    async def _groupchat_loop(self, chatid: str, chat_cfg: dict, session, manager_reply: str):
-        """GroupChat 调度循环：解析 Manager 的 @agent 指令，调度工作 Agent"""
-        agent_names = chat_cfg.get("agents", [])
-        reply = manager_reply
-        max_turns = 20  # 防止无限循环
-
-        for _ in range(max_turns):
-            # 写入 Manager 回复
-            session._messages.append("Manager", reply)
-
-            # 解析 @指令
-            parsed = self._parse_at_command(reply, agent_names)
-            if not parsed:
-                break  # 没有 @指令，Manager 直接回复了用户，结束
-
-            name, instruction = parsed
-
-            if name == "Human":
-                # @Human — 推送企微等用户回复
-                human_reply = await session.wait_human(instruction)
-                if not human_reply:
-                    break  # 超时，Manager 自行决定
-                # 把用户回复发给 Manager 继续
-                reply = await session.send_from_human(human_reply)
-                if not reply:
-                    break
-                continue
-
-            # @工作Agent — 调度执行
-            log.info("GroupChat 调度 chatid=%s agent=%s", chatid, name)
-            chat_type = 1 if chatid.startswith("dm_") else 2
-            await self.ws.send_msg(chatid, chat_type, f"⚙️ 正在调度 {name} 执行...")
-
-            agent_reply = await session.dispatch_agent(name, instruction)
-            if not agent_reply:
-                break
-
-            # 把工作 Agent 的回复发给 Manager，让它决定下一步
-            history = session._messages.format_for_prompt()
-            reply = await session._manager.send(
-                f"[GroupChat 对话历史]\n{history}\n\n---\n"
-                f"{name} 已完成，请决定下一步。"
-            )
-            session._messages.append("Manager", reply)
-
-            # 推送 Manager 的决策给用户
-            if reply and not self._parse_at_command(reply, agent_names):
-                await self.ws.send_msg(chatid, chat_type, reply[:1500])
-                break
-
-        log.info("GroupChat 循环结束 chatid=%s", chatid)
 
     async def _get_delegate(self, chatid: str, chat_cfg: dict) -> DelegateSession:
         if chatid not in self._delegates:

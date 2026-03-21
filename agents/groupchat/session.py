@@ -1,5 +1,5 @@
 """GroupChat 模式 — 多 Agent 协作，共享消息列表"""
-import asyncio, json, logging, os, time
+import asyncio, json, logging, os, re, time
 
 from agents.process import KiroProcess
 from agents.task_manager import TaskManager
@@ -71,6 +71,7 @@ class GroupChatSession:
         self._last_active: float = time.monotonic()
         self._running = False
         self._progress_task: asyncio.Task | None = None
+        self._loop_task: asyncio.Task | None = None
 
     async def start(self):
         """启动 Manager 进程"""
@@ -101,11 +102,26 @@ class GroupChatSession:
         if self._waiting_human:
             self._waiting_human = False
             self._human_event.set()
+            return ""  # 不需要 Manager 回复，循环会继续
 
-        # 发给 Manager，带上对话历史
+        # 如果后台调度循环正在跑，不打断，只写入消息
+        if self._loop_task and not self._loop_task.done():
+            log.info("GroupChat 后台循环运行中，消息已写入 chatid=%s", self._chatid)
+            return "收到，后台任务正在执行中，完成后会通知你。"
+
+        # 发给 Manager
         history = self._messages.format_for_prompt()
         prompt = self._build_manager_prompt(history, text)
-        return await self._manager.send(prompt, on_chunk=on_chunk)
+        result = await self._manager.send(prompt, on_chunk=on_chunk)
+
+        # Manager 回复后，启动后台调度循环
+        if result:
+            self._messages.append("Manager", result)
+            parsed = self._parse_at_command(result)
+            if parsed:
+                self._loop_task = asyncio.create_task(self._dispatch_loop(parsed))
+
+        return result
 
     def _build_manager_prompt(self, history: str, latest_msg: str) -> str:
         agents_list = ", ".join(self._agent_names)
@@ -121,6 +137,59 @@ class GroupChatSession:
             f"- 如果可以直接回答用户，直接回复\n\n"
             f"最新消息: [{latest_msg}]"
         )
+
+    def _parse_at_command(self, text: str) -> tuple[str, str] | None:
+        """解析 @agent-name 指令"""
+        for name in self._agent_names + ["Human"]:
+            m = re.search(rf'@{re.escape(name)}\s+(.*)', text, re.DOTALL)
+            if m:
+                return name, m.group(1).strip()
+        return None
+
+    async def _dispatch_loop(self, initial_command: tuple[str, str]):
+        """后台调度循环 — 独立于用户消息链路"""
+        chat_type = 1 if self._chatid.startswith("dm_") else 2
+        name, instruction = initial_command
+        max_turns = 20
+
+        try:
+            for _ in range(max_turns):
+                if name == "Human":
+                    human_reply = await self.wait_human(instruction)
+                    if not human_reply:
+                        break
+                    # 用户回复后发给 Manager
+                    history = self._messages.format_for_prompt()
+                    reply = await self._manager.send(
+                        f"[GroupChat 对话历史]\n{history}\n\n---\nHuman 已回复，请决定下一步。")
+                else:
+                    # 调度工作 Agent
+                    log.info("GroupChat 调度 chatid=%s agent=%s", self._chatid, name)
+                    await self._ws.send_msg(self._chatid, chat_type, f"⚙️ 正在调度 {name} 执行...")
+                    agent_reply = await self.dispatch_agent(name, instruction)
+                    if not agent_reply:
+                        break
+                    # 结果回传 Manager
+                    history = self._messages.format_for_prompt()
+                    reply = await self._manager.send(
+                        f"[GroupChat 对话历史]\n{history}\n\n---\n{name} 已完成，请决定下一步。")
+
+                if not reply:
+                    break
+                self._messages.append("Manager", reply)
+
+                # 解析下一步
+                parsed = self._parse_at_command(reply)
+                if not parsed:
+                    # 没有 @指令，推送给用户
+                    await self._ws.send_msg(self._chatid, chat_type, reply[:1500])
+                    break
+                name, instruction = parsed
+        except Exception as e:
+            log.error("GroupChat 调度循环异常 chatid=%s: %s", self._chatid, e)
+            await self._ws.send_msg(self._chatid, chat_type, f"❌ 调度异常: {e}")
+        finally:
+            log.info("GroupChat 调度循环结束 chatid=%s", self._chatid)
 
     async def dispatch_agent(self, agent_name: str, instruction: str) -> str:
         """调度指定 Agent 执行任务"""
