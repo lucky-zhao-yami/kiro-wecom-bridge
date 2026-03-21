@@ -198,26 +198,26 @@ class KiroProcess:
             self._pending.pop(mid, None)
 
     async def cancel(self):
-        """发送 session/cancel 取消当前操作，等待确认"""
+        """尝试 session/cancel，不支持则静默忽略"""
         if self._session_id:
             try:
-                await self._send_rpc_and_wait("session/cancel", {"sessionId": self._session_id}, timeout=15)
+                await self._send_rpc_and_wait("session/cancel", {"sessionId": self._session_id}, timeout=5)
                 log.info("session/cancel 完成 chatid=%s", self._chatid)
-            except Exception as e:
-                log.warning("session/cancel 异常 chatid=%s: %s", self._chatid, e)
+                return True
+            except Exception:
+                return False
+        return False
 
     async def send(self, text: str, on_chunk=None, timeout: float = 300) -> str:
-        # 打断：发 session/cancel 取消当前操作
+        # 打断：尝试 cancel，失败则标记 interrupted 等旧 prompt 结束
         if self._interruptible:
             if self._current_task and not self._current_task.done():
                 log.info("打断旧 prompt chatid=%s", self._chatid)
                 self._interrupted = True
-                await self.cancel()
-                # cancel 后旧 prompt 应该很快结束，等一下
+                cancelled = await self.cancel()
                 try:
-                    await asyncio.wait_for(self._current_task, timeout=5)
+                    await asyncio.wait_for(self._current_task, timeout=5 if cancelled else 30)
                 except (asyncio.TimeoutError, Exception):
-                    # 强制结束旧 prompt 的等待
                     await self._chunk_queue.put(None)
         else:
             await self._lock.acquire()
