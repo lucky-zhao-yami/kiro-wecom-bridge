@@ -178,7 +178,7 @@ class Channel:
 
     async def _get_delegate(self, chatid: str, chat_cfg: dict) -> DelegateSession:
         if chatid not in self._delegates:
-            session = DelegateSession(chatid, chat_cfg, self.ws)
+            session = DelegateSession(chatid, chat_cfg, self.ws, pool=self.pool)
             await session.start()
             self._delegates[chatid] = session
         return self._delegates[chatid]

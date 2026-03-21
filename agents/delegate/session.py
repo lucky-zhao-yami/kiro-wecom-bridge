@@ -14,10 +14,11 @@ class DelegateSession:
     MAX_WORKERS = 3
     DISPATCH_INTERVAL = 5
 
-    def __init__(self, chatid: str, chat_config: dict, ws):
+    def __init__(self, chatid: str, chat_config: dict, ws, pool=None):
         self._chatid = chatid
         self._config = chat_config
         self._ws = ws
+        self._pool = pool
         self._cwd = chat_config.get("cwd", WORK_DIR)
         self._mode = chat_config.get("mode", "full")
         self._session_dir = os.path.join(SESSIONS_DIR, chatid)
@@ -29,12 +30,17 @@ class DelegateSession:
         self._last_active: float = time.monotonic()
 
     async def start(self):
-        """启动主 Agent + dispatch 循环"""
-        self._main = KiroProcess(
-            self._chatid, self._session_dir,
-            agent=self._config.get("agent"),
-            cwd=self._cwd, mode=self._mode, interruptible=True)
-        await self._main.start()
+        """启动主 Agent（优先从预热池取）+ dispatch 循环"""
+        if self._pool:
+            self._main = await self._pool.get_or_create(
+                self._chatid, agent=self._config.get("agent"),
+                cwd=self._cwd, mode=self._mode)
+        else:
+            self._main = KiroProcess(
+                self._chatid, self._session_dir,
+                agent=self._config.get("agent"),
+                cwd=self._cwd, mode=self._mode, interruptible=True)
+            await self._main.start()
         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
         log.info("DelegateSession 启动 chatid=%s", self._chatid)
 
