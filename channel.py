@@ -309,6 +309,8 @@ class Channel:
 
             chat_cfg = self._get_chat_config(chatid)
             seg = StreamSegmenter(self.ws, req_id, stream_id)
+            # 立即发占位，防止企微超时
+            await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
             proc = await self.pool.get_or_create(
                 chatid, agent=chat_cfg.get("agent"),
                 cwd=chat_cfg.get("cwd", WORK_DIR), mode=chat_cfg.get("mode", "full"))
@@ -420,6 +422,8 @@ class Channel:
         mode = chat_cfg.get("mode", "full")
         seg = StreamSegmenter(self.ws, req_id, stream_id)
         try:
+            # 立即发占位，防止企微超时
+            await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
             proc = await self.pool.get_or_create(chatid, agent=agent, cwd=cwd, mode=mode)
             await proc.send(text, on_chunk=seg.feed)
             await seg.finish()

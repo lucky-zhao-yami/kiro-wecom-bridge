@@ -36,6 +36,9 @@ async def lifespan(app: FastAPI):
     ws_tasks = await cm.start_all()
     cleanup_task = asyncio.create_task(_cleanup_loop())
     scheduler.sync_all()
+    # 预热进程池
+    for ch in cm.channels:
+        await ch.pool.warmup()
     yield
     cleanup_task.cancel()
     for t in ws_tasks:

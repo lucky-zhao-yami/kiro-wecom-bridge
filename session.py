@@ -437,9 +437,25 @@ async def _recycle_memory(chatid: str, session_dir: str, cwd: str, history: list
 class ProcessPool:
     MAX_PROCS = 10
     IDLE_TIMEOUT = 1800
+    WARM_POOL_SIZE = int(os.getenv("WARM_POOL_SIZE", "3"))
 
     def __init__(self):
         self._pool: OrderedDict[str, KiroProcess] = OrderedDict()
+        self._warm: list[KiroProcess] = []  # 预热的空闲进程
+
+    async def warmup(self, cwd: str | None = None):
+        """预热空闲进程池"""
+        effective_cwd = cwd or WORK_DIR
+        for i in range(self.WARM_POOL_SIZE):
+            try:
+                warm_id = f"_warm_{i}"
+                session_dir = os.path.join(SESSIONS_DIR, warm_id)
+                proc = KiroProcess(warm_id, session_dir, None, effective_cwd, mode="full")
+                await proc.start()
+                self._warm.append(proc)
+                log.info("预热进程 %d/%d 就绪 pid=%d", i + 1, self.WARM_POOL_SIZE, proc._proc.pid)
+            except Exception as e:
+                log.error("预热进程失败: %s", e)
 
     async def get_or_create(self, chatid: str, agent: str | None = None, cwd: str | None = None, mode: str = "full") -> KiroProcess:
         if chatid in self._pool:
@@ -452,12 +468,44 @@ class ProcessPool:
         if len(self._pool) >= self.MAX_PROCS:
             await self._evict_lru()
 
+        # 尝试从预热池取一个
+        if self._warm:
+            proc = self._warm.pop(0)
+            session_dir = os.path.join(SESSIONS_DIR, chatid)
+            proc._chatid = chatid
+            proc._session_dir = session_dir
+            proc._mode = mode
+            # 重新创建 session（新的 cwd）
+            effective_cwd = cwd or WORK_DIR
+            proc._cwd = effective_cwd
+            await proc._create_session()
+            self._pool[chatid] = proc
+            log.info("从预热池分配进程 chatid=%s pid=%d (剩余预热=%d)",
+                     chatid, proc._proc.pid, len(self._warm))
+            # 后台补充预热池
+            asyncio.create_task(self._refill_warm(effective_cwd))
+            return proc
+
         session_dir = os.path.join(SESSIONS_DIR, chatid)
         effective_cwd = cwd or WORK_DIR
         proc = KiroProcess(chatid, session_dir, agent, effective_cwd, mode=mode)
         await proc.start()
         self._pool[chatid] = proc
         return proc
+
+    async def _refill_warm(self, cwd: str):
+        """后台补充一个预热进程"""
+        if len(self._warm) >= self.WARM_POOL_SIZE:
+            return
+        try:
+            warm_id = f"_warm_{len(self._warm)}"
+            session_dir = os.path.join(SESSIONS_DIR, warm_id)
+            proc = KiroProcess(warm_id, session_dir, None, cwd, mode="full")
+            await proc.start()
+            self._warm.append(proc)
+            log.info("补充预热进程 pid=%d (预热池=%d)", proc._proc.pid, len(self._warm))
+        except Exception as e:
+            log.error("补充预热进程失败: %s", e)
 
     async def _evict_lru(self):
         if not self._pool:
@@ -476,6 +524,8 @@ class ProcessPool:
 
     async def shutdown(self):
         tasks = [proc.stop() for proc in self._pool.values()]
+        tasks += [proc.stop() for proc in self._warm]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._pool.clear()
+        self._warm.clear()
