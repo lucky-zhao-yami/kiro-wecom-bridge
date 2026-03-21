@@ -29,18 +29,59 @@ async def _cleanup_loop():
                 log.error("cleanup_idle 异常: %s", e)
 
 
+async def _daily_memory_loop():
+    """每天 0 点把昨天的 history 整理到长期记忆"""
+    import glob, time as _time
+    while True:
+        # 计算到明天 0:00:05 的秒数
+        now = _time.time()
+        tomorrow = now - (now % 86400) + 86400 + 5  # UTC 明天 00:00:05
+        # 调整为本地时区（UTC+8）
+        local_midnight = tomorrow - 8 * 3600
+        wait = max(local_midnight - now, 60)
+        log.info("下次记忆整理: %.0f 秒后", wait)
+        await asyncio.sleep(wait)
+        # 扫描所有 chatid 的 history.jsonl
+        sessions_dir = os.path.join(os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all"), "wecom-sessions")
+        for hist_file in glob.glob(os.path.join(sessions_dir, "*/history.jsonl")):
+            chatid = os.path.basename(os.path.dirname(hist_file))
+            if chatid.startswith("_warm"):
+                continue
+            try:
+                with open(hist_file, "r") as f:
+                    lines = f.readlines()
+                if not lines:
+                    continue
+                # 检查是否是昨天的（第一行的 ts）
+                import json as _json
+                first_ts = _json.loads(lines[0].strip()).get("ts", 0)
+                if _time.strftime("%Y-%m-%d", _time.localtime(first_ts)) == _time.strftime("%Y-%m-%d"):
+                    continue  # 今天的，不处理
+                log.info("整理昨日记忆 chatid=%s turns=%d", chatid, len(lines))
+                from session import _recycle_memory, _load_history, _clear_history
+                session_dir = os.path.dirname(hist_file)
+                history = _load_history(session_dir, max_turns=50)
+                cwd = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
+                await _recycle_memory(chatid, session_dir, cwd, history)
+                _clear_history(session_dir)
+            except Exception as e:
+                log.error("整理记忆失败 chatid=%s: %s", chatid, e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("kiro-wecom-bridge 启动")
     cm.load(CHANNELS_PATH)
     ws_tasks = await cm.start_all()
     cleanup_task = asyncio.create_task(_cleanup_loop())
+    memory_task = asyncio.create_task(_daily_memory_loop())
     scheduler.sync_all()
     # 预热进程池
     for ch in cm.channels:
         await ch.pool.warmup()
     yield
     cleanup_task.cancel()
+    memory_task.cancel()
     for t in ws_tasks:
         t.cancel()
     for ch in cm.channels:

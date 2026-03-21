@@ -61,11 +61,32 @@ def _extract_summary(reply: str) -> str:
     return reply[:500]
 
 
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def _history_path(session_dir: str) -> str:
+    return os.path.join(session_dir, HISTORY_FILE)
+
+
 def _append_history(session_dir: str, user: str, assistant: str):
-    """追加对话记录到 JSONL 文件"""
+    """追加对话记录，跨天自动清空"""
     try:
         os.makedirs(session_dir, exist_ok=True)
-        with open(os.path.join(session_dir, HISTORY_FILE), "a") as f:
+        p = _history_path(session_dir)
+        # 跨天检测：读第一行的日期，不是今天就清空
+        today = _today()
+        if os.path.isfile(p):
+            try:
+                with open(p, "r") as f:
+                    first = f.readline().strip()
+                if first:
+                    ts = json.loads(first).get("ts", 0)
+                    if time.strftime("%Y-%m-%d", time.localtime(ts)) != today:
+                        os.remove(p)
+            except Exception:
+                pass
+        with open(p, "a") as f:
             f.write(json.dumps({"user": user, "assistant": assistant, "ts": int(time.time())}, ensure_ascii=False) + "\n")
     except Exception as e:
         log.error("追加历史失败: %s", e)
@@ -189,18 +210,17 @@ class KiroProcess:
 
         self._interrupted = False
 
-        # 第一条消息时注入上次摘要 + 安全规则
+        # 第一条消息时注入安全规则 + 历史文件路径
         actual_text = text
         if self._first_msg:
             self._first_msg = False
             from guard import get_preamble
             preamble = get_preamble(self._mode)
-            summary = _load_summary(self._session_dir)
-            if summary:
-                actual_text = f"{preamble}[上次会话摘要]\n{summary}\n\n---\n[chatid={self._chatid}]\n{text}"
-                log.info("注入会话摘要 chatid=%s len=%d mode=%s", self._chatid, len(summary), self._mode)
-            else:
-                actual_text = f"{preamble}[chatid={self._chatid}]\n{text}"
+            history_path = _history_path(self._session_dir)
+            history_hint = ""
+            if os.path.isfile(history_path):
+                history_hint = f"\n[今日对话历史: {history_path}]\n如需回顾之前的对话上下文，请用 fs_read 读取此文件。\n"
+            actual_text = f"{preamble}{history_hint}[chatid={self._chatid}]\n{text}"
 
         prompt = [{"type": "text", "text": actual_text}]
         self._current_task = asyncio.current_task()
@@ -230,11 +250,11 @@ class KiroProcess:
             self._first_msg = False
             from guard import get_preamble
             preamble = get_preamble(self._mode)
-            summary = _load_summary(self._session_dir)
-            prefix = preamble
-            if summary:
-                prefix += f"[上次会话摘要]\n{summary}\n\n---\n"
-                log.info("注入会话摘要 chatid=%s len=%d mode=%s", self._chatid, len(summary), self._mode)
+            history_path = _history_path(self._session_dir)
+            history_hint = ""
+            if os.path.isfile(history_path):
+                history_hint = f"\n[今日对话历史: {history_path}]\n如需回顾之前的对话上下文，请用 fs_read 读取此文件。\n"
+            prefix = f"{preamble}{history_hint}"
             for item in content:
                 if item.get("type") == "text":
                     item["text"] = prefix + f"[chatid={self._chatid}]\n" + item["text"]
