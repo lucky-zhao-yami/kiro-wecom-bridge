@@ -136,6 +136,22 @@ ChatRoom (per chatid)
 - 重试仍失败：Manager @Human 通知，等待指示
 - Agent 进程崩溃：从预热池重建，重新分配任务
 
+## Agent 角色定义
+
+复用 `.kiro/agents/` 下已有的 agent 定义，每个 ACP 进程通过 `--agent` 参数指定角色：
+
+| Agent | --agent 参数 | 角色 |
+|-------|-------------|------|
+| Manager | orchestrator-agent | 调度、对用户、控制流程 |
+| Architect | architect-agent | 架构设计 |
+| API Designer | api-designer-agent | 接口契约设计 |
+| Coder | coder-agent | 编码实现 |
+| Reviewer | reviewer-agent | 代码审查 |
+| QA | qa-agent | 测试编写 |
+| Doc Engineer | doc-engineer-agent | 文档生成 |
+
+不需要额外编写角色 prompt，kiro 自动加载 `.kiro/agents/{name}/prompt.md`。
+
 ## 配置
 
 channels.json 新增 agent_mode 和 agents 字段：
@@ -145,7 +161,8 @@ channels.json 新增 agent_mode 和 agents 字段：
   "dm_ZhaoXingPing": {
     "mode": "full",
     "agent_mode": "groupchat",
-    "agents": ["architect", "coder", "reviewer"]
+    "manager": "orchestrator-agent",
+    "agents": ["architect-agent", "coder-agent", "reviewer-agent", "qa-agent"]
   },
   "CHAT_ID_OPS": {
     "mode": "safe",
