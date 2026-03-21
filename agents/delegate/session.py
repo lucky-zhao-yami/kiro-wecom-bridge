@@ -10,6 +10,19 @@ WORK_DIR = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
 SESSIONS_DIR = os.path.join(WORK_DIR, "wecom-sessions")
 
 
+DELEGATE_PREAMBLE = """[DELEGATE 模式]
+你是主 Agent，负责和用户对话。你有 Worker Agent 帮你执行长任务。
+
+当用户要求执行预计超过 30 秒的任务（代码分析、编码、文件处理、批量操作等）时：
+1. 不要自己执行，用 fs_read 读取 {tasks_path}，然后用 fs_write 追加一条新任务：
+   {{"id": "t_日期_随机6位", "seq": 下一个序号, "status": "pending", "description": "简述", "prompt": "详细指令", "depends_on": [], "assigned_to": null, "created_at": 时间戳}}
+2. 回复用户："已安排，我会跟进进度。"
+3. 用户问进度时，fs_read {tasks_path} 查看状态回复。
+
+简单问答、闲聊、查询类问题直接自己回答，不要分发。
+"""
+
+
 class DelegateSession:
     MAX_WORKERS = 3
     DISPATCH_INTERVAL = 5
@@ -28,6 +41,7 @@ class DelegateSession:
         self._task_mgr = TaskManager(self._session_dir)
         self._dispatch_task: asyncio.Task | None = None
         self._last_active: float = time.monotonic()
+        self._first_msg = True
 
     async def start(self):
         """启动主 Agent（优先从预热池取）+ dispatch 循环"""
@@ -45,10 +59,15 @@ class DelegateSession:
         log.info("DelegateSession 启动 chatid=%s", self._chatid)
 
     async def send_to_main(self, text: str, on_chunk=None) -> str:
-        """发消息给主 Agent"""
+        """发消息给主 Agent，首次注入 delegate 指令"""
         self._last_active = time.monotonic()
         if not self._main or not self._main.alive:
             await self.start()
+        # 首次消息注入 delegate preamble（在 KiroProcess 的 preamble 之外额外加）
+        if self._first_msg:
+            self._first_msg = False
+            tasks_path = os.path.join(self._session_dir, "tasks.json")
+            text = DELEGATE_PREAMBLE.format(tasks_path=tasks_path) + "\n" + text
         return await self._main.send(text, on_chunk=on_chunk)
 
     async def _dispatch_loop(self):
