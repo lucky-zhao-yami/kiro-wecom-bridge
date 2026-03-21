@@ -58,7 +58,7 @@ async def _daily_memory_loop():
                 if _time.strftime("%Y-%m-%d", _time.localtime(first_ts)) == _time.strftime("%Y-%m-%d"):
                     continue  # 今天的，不处理
                 log.info("整理昨日记忆 chatid=%s turns=%d", chatid, len(lines))
-                from session import _recycle_memory, _load_history, _clear_history
+                from agents.process import _recycle_memory, _load_history, _clear_history
                 session_dir = os.path.dirname(hist_file)
                 history = _load_history(session_dir, max_turns=50)
                 cwd = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
