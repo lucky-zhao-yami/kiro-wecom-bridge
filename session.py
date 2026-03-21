@@ -181,13 +181,9 @@ class KiroProcess:
         # 打断或排队
         if self._interruptible:
             if self._current_task and not self._current_task.done():
-                log.info("打断旧 prompt chatid=%s", self._chatid)
-                self._interrupted = True  # 标记忽略旧 prompt 输出
-                # 等旧 prompt 结束（ACP 不支持取消，只能等）
-                try:
-                    await asyncio.wait_for(self._current_task, timeout=30)
-                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                    pass
+                log.info("打断旧 prompt chatid=%s，等待完成后处理新消息", self._chatid)
+                self._interrupted = True
+                await self._current_task  # 等旧 prompt 自然结束
         else:
             await self._lock.acquire()
 
