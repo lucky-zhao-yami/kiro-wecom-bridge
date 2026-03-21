@@ -131,10 +131,12 @@ class GroupChatSession:
             f"你是 Manager，可用的工作 Agent: {agents_list}\n"
             f"共享消息文件: {self._messages._path}\n"
             f"任务清单文件: {os.path.join(self._session_dir, 'tasks.json')}\n\n"
-            f"请决定下一步行动：\n"
-            f"- 如果需要某个 Agent 工作，回复: @AgentName 指令内容\n"
-            f"- 如果需要用户决策，回复: @Human 问题\n"
-            f"- 如果可以直接回答用户，直接回复\n\n"
+            f"**重要：你必须自动驱动整个流程。** 当一个 Agent 完成后，立即用 @ 调度下一个 Agent，不要停下来等用户。\n"
+            f"只有在需要用户做决策时才 @Human。\n\n"
+            f"回复格式：\n"
+            f"- 调度 Agent: @AgentName 指令内容\n"
+            f"- 需要用户决策: @Human 问题\n"
+            f"- 所有工作完成，汇报结果: 直接回复（不带 @）\n\n"
             f"最新消息: [{latest_msg}]"
         )
 
@@ -161,7 +163,7 @@ class GroupChatSession:
                     # 用户回复后发给 Manager
                     history = self._messages.format_for_prompt()
                     reply = await self._manager.send(
-                        f"[GroupChat 对话历史]\n{history}\n\n---\nHuman 已回复，请决定下一步。")
+                        f"[GroupChat 对话历史]\n{history}\n\n---\nHuman 已回复，请立即用 @ 调度下一个 Agent 继续流程。")
                 else:
                     # 调度工作 Agent
                     log.info("GroupChat 调度 chatid=%s agent=%s", self._chatid, name)
@@ -172,7 +174,8 @@ class GroupChatSession:
                     # 结果回传 Manager
                     history = self._messages.format_for_prompt()
                     reply = await self._manager.send(
-                        f"[GroupChat 对话历史]\n{history}\n\n---\n{name} 已完成，请决定下一步。")
+                        f"[GroupChat 对话历史]\n{history}\n\n---\n"
+                        f"{name} 已完成，请立即用 @ 调度下一个 Agent 继续流程。只有所有工作都完成后才直接回复用户。")
 
                 if not reply:
                     break
