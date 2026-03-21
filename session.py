@@ -266,13 +266,8 @@ class KiroProcess:
             "prompt": prompt,
         })
         try:
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + timeout
             while True:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    raise asyncio.TimeoutError()
-                chunk = await asyncio.wait_for(self._chunk_queue.get(), timeout=remaining)
+                chunk = await self._chunk_queue.get()
                 if chunk is None:
                     break
                 if on_chunk and not self._interrupted:
@@ -281,20 +276,6 @@ class KiroProcess:
             self._history.append({"user": user_text, "assistant": self._full_text})
             _append_history(self._session_dir, user_text, self._full_text)
             return self._full_text
-        except asyncio.TimeoutError:
-            # 读 stderr 看 kiro 在干什么
-            stderr_hint = ""
-            if self._proc and self._proc.stderr:
-                try:
-                    stderr_data = await asyncio.wait_for(self._proc.stderr.read(4096), timeout=1)
-                    stderr_hint = stderr_data.decode(errors="replace").strip()[-500:]
-                except Exception:
-                    pass
-            log.warning("prompt 超时 chatid=%s partial_len=%d stderr=%s",
-                        self._chatid, len(self._full_text), stderr_hint or "(empty)")
-            self._history.append({"user": user_text, "assistant": ""})
-            _append_history(self._session_dir, user_text, "")
-            return "⏰ 回复超时，请稍后重试"
         except RuntimeError as e:
             log.error("ACP 进程异常 chatid=%s: %s", self._chatid, e)
             self._history.append({"user": user_text, "assistant": ""})
