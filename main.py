@@ -27,6 +27,13 @@ async def _cleanup_loop():
                 await ch.pool.cleanup_idle()
             except Exception as e:
                 log.error("cleanup_idle 异常: %s", e)
+            # 清理空闲的 GroupChat 会话
+            for cid in list(ch._groupchats):
+                session = ch._groupchats[cid]
+                if session.can_recycle():
+                    await session.stop()
+                    del ch._groupchats[cid]
+                    log.info("回收空闲 GroupChat chatid=%s", cid)
 
 
 async def _daily_memory_loop():

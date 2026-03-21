@@ -192,7 +192,8 @@ class GroupChatSession:
             log.error("GroupChat 调度循环异常 chatid=%s: %s", self._chatid, e)
             await self._ws.send_msg(self._chatid, chat_type, f"❌ 调度异常: {e}")
         finally:
-            log.info("GroupChat 调度循环结束 chatid=%s", self._chatid)
+            log.info("GroupChat 调度循环结束 chatid=%s，清理工作 Agent", self._chatid)
+            await self._cleanup_agents()
 
     async def dispatch_agent(self, agent_name: str, instruction: str) -> str:
         """调度指定 Agent 执行任务"""
@@ -255,6 +256,16 @@ class GroupChatSession:
         if self._waiting_human:
             return False
         return time.monotonic() - self._last_active > 1800
+
+    async def _cleanup_agents(self):
+        """调度循环结束后关闭所有工作 Agent 进程，释放内存"""
+        for name, proc in list(self._agents.items()):
+            try:
+                await proc.stop()
+                log.info("关闭工作 Agent chatid=%s agent=%s", self._chatid, name)
+            except Exception as e:
+                log.warning("关闭 Agent 失败 %s: %s", name, e)
+        self._agents.clear()
 
     async def stop(self):
         self._running = False
