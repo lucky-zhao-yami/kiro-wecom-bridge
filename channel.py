@@ -425,8 +425,11 @@ class Channel:
             # 立即发占位，防止企微超时
             await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
             proc = await self.pool.get_or_create(chatid, agent=agent, cwd=cwd, mode=mode)
-            await proc.send(text, on_chunk=seg.feed)
-            await seg.finish()
+            result = await proc.send(text, on_chunk=seg.feed)
+            if result:  # 被打断时返回空字符串，不 finish
+                await seg.finish()
+        except asyncio.CancelledError:
+            pass  # 被打断，静默退出
         except Exception as e:
             log.error("chat 异常 req=%s: %s", req_id, e)
             await self.ws.send_stream(req_id, stream_id, f"❌ 处理异常: {e}", finish=True)

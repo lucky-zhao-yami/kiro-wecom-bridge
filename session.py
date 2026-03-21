@@ -115,14 +115,17 @@ def _format_history(history: list[dict]) -> str:
 class KiroProcess:
     """单个 kiro-cli ACP 进程"""
 
-    def __init__(self, chatid: str, session_dir: str, agent: str | None, cwd: str, mode: str = "full"):
+    def __init__(self, chatid: str, session_dir: str, agent: str | None, cwd: str,
+                 mode: str = "full", interruptible: bool = True):
         self._chatid = chatid
         self._session_dir = session_dir
         self._agent = agent
         self._cwd = cwd
         self._mode = mode
+        self._interruptible = interruptible
         self._proc: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
+        self._current_task: asyncio.Task | None = None  # 当前正在处理的 prompt task
         self._last_active: float = 0
         self._session_id: str | None = None
         self._msg_id: int = 0
@@ -174,46 +177,85 @@ class KiroProcess:
             self._pending.pop(mid, None)
 
     async def send(self, text: str, on_chunk=None, timeout: float = 300) -> str:
-        async with self._lock:
-            # 第一条消息时注入上次摘要 + 安全规则
-            actual_text = text
-            if self._first_msg:
-                self._first_msg = False
-                from guard import get_preamble
-                preamble = get_preamble(self._mode)
-                summary = _load_summary(self._session_dir)
-                if summary:
-                    actual_text = f"{preamble}[上次会话摘要]\n{summary}\n\n---\n[chatid={self._chatid}]\n{text}"
-                    log.info("注入会话摘要 chatid=%s len=%d mode=%s", self._chatid, len(summary), self._mode)
-                else:
-                    actual_text = f"{preamble}[chatid={self._chatid}]\n{text}"
+        # 打断或排队
+        if self._interruptible:
+            if self._current_task and not self._current_task.done():
+                log.info("打断旧 prompt chatid=%s", self._chatid)
+                self._current_task.cancel()
+                try:
+                    await self._current_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        else:
+            await self._lock.acquire()
 
-            prompt = [{"type": "text", "text": actual_text}]
+        # 第一条消息时注入上次摘要 + 安全规则
+        actual_text = text
+        if self._first_msg:
+            self._first_msg = False
+            from guard import get_preamble
+            preamble = get_preamble(self._mode)
+            summary = _load_summary(self._session_dir)
+            if summary:
+                actual_text = f"{preamble}[上次会话摘要]\n{summary}\n\n---\n[chatid={self._chatid}]\n{text}"
+                log.info("注入会话摘要 chatid=%s len=%d mode=%s", self._chatid, len(summary), self._mode)
+            else:
+                actual_text = f"{preamble}[chatid={self._chatid}]\n{text}"
+
+        prompt = [{"type": "text", "text": actual_text}]
+        self._current_task = asyncio.current_task()
+        try:
             return await self._send_prompt(prompt, text, on_chunk, timeout)
+        except asyncio.CancelledError:
+            log.info("prompt 被打断 chatid=%s", self._chatid)
+            return ""  # 被打断，不回复
+        finally:
+            self._current_task = None
+            if not self._interruptible:
+                self._lock.release()
 
     async def send_multimodal(self, content: list[dict], on_chunk=None, timeout: float = 300) -> str:
         """发送多模态内容（文本+图片），content 是 ACP prompt content 数组"""
-        async with self._lock:
-            if self._first_msg:
-                self._first_msg = False
-                from guard import get_preamble
-                preamble = get_preamble(self._mode)
-                summary = _load_summary(self._session_dir)
-                prefix = preamble
-                if summary:
-                    prefix += f"[上次会话摘要]\n{summary}\n\n---\n"
-                    log.info("注入会话摘要 chatid=%s len=%d mode=%s", self._chatid, len(summary), self._mode)
-                for item in content:
-                    if item.get("type") == "text":
-                        item["text"] = prefix + f"[chatid={self._chatid}]\n" + item["text"]
-                        break
+        if self._interruptible:
+            if self._current_task and not self._current_task.done():
+                log.info("打断旧 prompt chatid=%s", self._chatid)
+                self._current_task.cancel()
+                try:
+                    await self._current_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        else:
+            await self._lock.acquire()
 
-            user_desc = "[图片消息]"
+        if self._first_msg:
+            self._first_msg = False
+            from guard import get_preamble
+            preamble = get_preamble(self._mode)
+            summary = _load_summary(self._session_dir)
+            prefix = preamble
+            if summary:
+                prefix += f"[上次会话摘要]\n{summary}\n\n---\n"
+                log.info("注入会话摘要 chatid=%s len=%d mode=%s", self._chatid, len(summary), self._mode)
             for item in content:
                 if item.get("type") == "text":
-                    user_desc = item["text"][:200]
+                    item["text"] = prefix + f"[chatid={self._chatid}]\n" + item["text"]
                     break
+
+        user_desc = "[图片消息]"
+        for item in content:
+            if item.get("type") == "text":
+                user_desc = item["text"][:200]
+                break
+        self._current_task = asyncio.current_task()
+        try:
             return await self._send_prompt(content, user_desc, on_chunk, timeout)
+        except asyncio.CancelledError:
+            log.info("prompt 被打断 chatid=%s", self._chatid)
+            return ""
+        finally:
+            self._current_task = None
+            if not self._interruptible:
+                self._lock.release()
 
     async def _send_prompt(self, prompt: list[dict], user_text: str, on_chunk, timeout: float) -> str:
         """公共 prompt 发送 + chunk 收集 + 历史记录"""
