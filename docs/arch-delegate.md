@@ -17,11 +17,13 @@ kiro-wecom-bridge/
 ├── main.py                # FastAPI 入口
 ├── ws_client.py           # 企微 WebSocket
 ├── channel.py             # 消息路由（纯路由，根据 agent_mode 分发）
+├── media.py               # 媒体处理（图片/语音/文件的下载、AES解密、保存）
+├── stream.py              # StreamSegmenter 流式分段
 ├── guard.py               # 安全防护
 ├── agents/                # Agent 调度模块
 │   ├── __init__.py        # 公共接口、AgentSession 基类
 │   ├── task_manager.py    # 任务文件读写（delegate/groupchat 共用）
-│   ├── process.py         # KiroProcess（从 session.py 搬过来，三种模式共用）
+│   ├── process.py         # KiroProcess（三种模式共用）
 │   ├── single/
 │   │   ├── __init__.py
 │   │   └── session.py     # SingleSession（现有 ProcessPool 逻辑）
@@ -34,6 +36,18 @@ kiro-wecom-bridge/
 │       └── manager.py     # Manager 调度逻辑（Phase 2）
 └── ...
 ```
+
+### 重构（随本次一起做）
+
+| 原文件 | 拆分到 | 说明 |
+|--------|--------|------|
+| channel.py 图片/语音/文件处理 | media.py | 下载、AES 解密、保存、格式检测 |
+| channel.py StreamSegmenter | stream.py | 流式分段逻辑 |
+| session.py KiroProcess | agents/process.py | 三种模式共用 |
+| session.py ProcessPool | agents/single/session.py | single 模式专用 |
+| session.py 历史/摘要/回收 | agents/process.py | 跟随 KiroProcess |
+
+重构后 channel.py 只剩消息路由（~100 行），session.py 删除。
 
 ## 核心类设计
 
