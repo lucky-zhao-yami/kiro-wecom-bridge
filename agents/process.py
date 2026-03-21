@@ -197,13 +197,27 @@ class KiroProcess:
         finally:
             self._pending.pop(mid, None)
 
+    async def cancel(self):
+        """发送 session/cancel 取消当前操作"""
+        if self._session_id:
+            try:
+                await self._send_rpc("session/cancel", {"sessionId": self._session_id})
+                log.info("session/cancel 已发送 chatid=%s", self._chatid)
+            except Exception as e:
+                log.warning("session/cancel 失败 chatid=%s: %s", self._chatid, e)
+
     async def send(self, text: str, on_chunk=None, timeout: float = 300) -> str:
-        # 打断或排队
+        # 打断：发 session/cancel 取消当前操作
         if self._interruptible:
             if self._current_task and not self._current_task.done():
-                log.info("打断旧 prompt chatid=%s，等待完成后处理新消息", self._chatid)
+                log.info("打断旧 prompt chatid=%s", self._chatid)
                 self._interrupted = True
-                await self._current_task  # 等旧 prompt 自然结束
+                await self.cancel()
+                # 等旧 prompt 结束（cancel 后应该很快）
+                try:
+                    await asyncio.wait_for(self._current_task, timeout=10)
+                except (asyncio.TimeoutError, Exception):
+                    pass
         else:
             await self._lock.acquire()
 
@@ -236,9 +250,10 @@ class KiroProcess:
             if self._current_task and not self._current_task.done():
                 log.info("打断旧 prompt chatid=%s", self._chatid)
                 self._interrupted = True
+                await self.cancel()
                 try:
-                    await asyncio.wait_for(self._current_task, timeout=30)
-                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(self._current_task, timeout=10)
+                except (asyncio.TimeoutError, Exception):
                     pass
         else:
             await self._lock.acquire()
