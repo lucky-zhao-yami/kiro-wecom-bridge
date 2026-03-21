@@ -201,8 +201,12 @@ wecom-sessions/{chatid}/
 
 - **创建时机**：用户发第一条消息时，根据 agent_mode 创建对应的 session 类型
 - **GroupChat 进程启动**：Manager 进程立即启动，工作 Agent 按需启动（Manager 分配任务时才创建）
-- **任务完成后**：工作 Agent 进程保留，等待下一个任务。空闲 30 分钟后回收
-- **ChatRoom 销毁**：所有 Agent 空闲超过 30 分钟，整个 ChatRoom 销毁
+- **单个 Agent 不回收**：已启动的 Agent 进程保持存活，随时可用
+- **整体回收条件**：同时满足以下三项才回收整个 ChatRoom
+  1. 无 running/pending 任务
+  2. 不在等待 @Human 回复
+  3. 以上两项满足后持续 30 分钟无新消息
+- **回收动作**：杀掉所有 ACP 进程，文件保留，下次消息自动重建
 
 ### 用户消息路由
 
@@ -232,8 +236,8 @@ wecom-sessions/{chatid}/
 | 单个 ChatRoom 最大 Agent 数 | 6（1 Manager + 5 工作 Agent） |
 | 系统总 ACP 进程上限 | 20（含预热池） |
 | 预热池大小 | 3（仅 single 模式使用） |
-| Worker 空闲回收时间 | 30 分钟 |
-| ChatRoom 空闲回收时间 | 30 分钟 |
+| 整体回收条件 | 无任务 + 不等 Human + 30 分钟无消息 |
+| 单个 Agent | 不回收，跟随 ChatRoom 整体回收 |
 
 ## Agent 角色定义
 
