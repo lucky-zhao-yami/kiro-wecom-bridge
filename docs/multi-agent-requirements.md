@@ -154,6 +154,36 @@ ChatRoom (per chatid)
 - 每个 Agent 发言前读取 shared_messages.jsonl 获取上下文
 - 每天 0 点整理到长期记忆（复用现有机制）
 
+### 状态持久化与恢复
+
+ChatRoom 的所有状态持久化到文件，进程随时可杀可重建：
+
+```
+wecom-sessions/{chatid}/
+├── history.jsonl              # 用户对话历史
+├── shared_messages.jsonl      # GroupChat 对话记录
+├── tasks.json                 # 任务清单和状态
+└── room_state.json            # ChatRoom 元数据（模式、阶段、轮次计数）
+```
+
+**回收时**：杀掉所有 ACP 进程，文件保留。
+
+**重建时**：
+1. 读 room_state.json 恢复模式和阶段
+2. 启动 Manager，第一条 prompt 注入文件路径，Manager 自己 fs_read 恢复上下文
+3. 工作 Agent 按需启动，同样读 shared_messages.jsonl 获取上下文
+
+### 每日 0 点记忆整理（三种模式统一）
+
+| 模式 | 当天文件 | 0 点处理 |
+|------|---------|---------|
+| Single | history.jsonl | → 长期记忆 → 清空 |
+| Delegate | history.jsonl + tasks.json | → 长期记忆 → 清空已完成任务 |
+| GroupChat | shared_messages.jsonl + tasks.json | → 长期记忆 → 清空已完成任务 |
+
+- room_state.json 保留（元数据，不清空）
+- 未完成的任务保留在 tasks.json 中，跨天继续执行
+
 ### Human 交互
 
 - Manager @Human 时：通过企微推送消息给用户
