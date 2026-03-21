@@ -10,19 +10,28 @@
 | channel.py | 修改 | 根据 agent_mode 路由到不同模块 |
 | main.py | 修改 | 任务完成检测 + 企微推送 |
 
-agent 调度逻辑全部在 `agents/` 目录下，不和 bridge 核心耦合。
+agent 调度逻辑全部在 `agents/` 目录下，不和 bridge 核心耦合。每个模式独立目录。
 
 ```
 kiro-wecom-bridge/
 ├── main.py                # FastAPI 入口
 ├── ws_client.py           # 企微 WebSocket
-├── channel.py             # 消息路由
-├── session.py             # KiroProcess + ProcessPool（single 模式）
+├── channel.py             # 消息路由（纯路由，根据 agent_mode 分发）
+├── guard.py               # 安全防护
 ├── agents/                # Agent 调度模块
-│   ├── __init__.py
-│   ├── task_manager.py    # 任务文件读写
-│   ├── delegate.py        # Delegate 模式
-│   └── groupchat.py       # GroupChat 模式（Phase 2）
+│   ├── __init__.py        # 公共接口、AgentSession 基类
+│   ├── task_manager.py    # 任务文件读写（delegate/groupchat 共用）
+│   ├── process.py         # KiroProcess（从 session.py 搬过来，三种模式共用）
+│   ├── single/
+│   │   ├── __init__.py
+│   │   └── session.py     # SingleSession（现有 ProcessPool 逻辑）
+│   ├── delegate/
+│   │   ├── __init__.py
+│   │   └── session.py     # DelegateSession
+│   └── groupchat/
+│       ├── __init__.py
+│       ├── session.py     # GroupChatSession
+│       └── manager.py     # Manager 调度逻辑（Phase 2）
 └── ...
 ```
 
