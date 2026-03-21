@@ -4,11 +4,27 @@
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| session.py | 修改 | ProcessPool 支持 worker 子进程管理 |
-| channel.py | 修改 | _process_and_reply 根据 agent_mode 路由 |
-| task_manager.py | 新增 | 任务文件读写 + 状态管理 |
-| delegate.py | 新增 | DelegateSession：主 Agent + Worker 池 |
+| agents/__init__.py | 新增 | 模块初始化 |
+| agents/task_manager.py | 新增 | 任务文件读写 + 状态管理 |
+| agents/delegate.py | 新增 | DelegateSession：主 Agent + Worker 池 |
+| channel.py | 修改 | 根据 agent_mode 路由到不同模块 |
 | main.py | 修改 | 任务完成检测 + 企微推送 |
+
+agent 调度逻辑全部在 `agents/` 目录下，不和 bridge 核心耦合。
+
+```
+kiro-wecom-bridge/
+├── main.py                # FastAPI 入口
+├── ws_client.py           # 企微 WebSocket
+├── channel.py             # 消息路由
+├── session.py             # KiroProcess + ProcessPool（single 模式）
+├── agents/                # Agent 调度模块
+│   ├── __init__.py
+│   ├── task_manager.py    # 任务文件读写
+│   ├── delegate.py        # Delegate 模式
+│   └── groupchat.py       # GroupChat 模式（Phase 2）
+└── ...
+```
 
 ## 核心类设计
 
