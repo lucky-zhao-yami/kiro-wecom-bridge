@@ -126,6 +126,7 @@ class KiroProcess:
         self._proc: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._current_task: asyncio.Task | None = None  # 当前正在处理的 prompt task
+        self._interrupted = False  # 标记当前 prompt 被打断，忽略后续输出
         self._last_active: float = 0
         self._session_id: str | None = None
         self._msg_id: int = 0
@@ -181,13 +182,16 @@ class KiroProcess:
         if self._interruptible:
             if self._current_task and not self._current_task.done():
                 log.info("打断旧 prompt chatid=%s", self._chatid)
-                self._current_task.cancel()
+                self._interrupted = True  # 标记忽略旧 prompt 输出
+                # 等旧 prompt 结束（ACP 不支持取消，只能等）
                 try:
-                    await self._current_task
-                except (asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(self._current_task, timeout=30)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
                     pass
         else:
             await self._lock.acquire()
+
+        self._interrupted = False
 
         # 第一条消息时注入上次摘要 + 安全规则
         actual_text = text
@@ -206,9 +210,6 @@ class KiroProcess:
         self._current_task = asyncio.current_task()
         try:
             return await self._send_prompt(prompt, text, on_chunk, timeout)
-        except asyncio.CancelledError:
-            log.info("prompt 被打断 chatid=%s", self._chatid)
-            return ""  # 被打断，不回复
         finally:
             self._current_task = None
             if not self._interruptible:
@@ -219,13 +220,15 @@ class KiroProcess:
         if self._interruptible:
             if self._current_task and not self._current_task.done():
                 log.info("打断旧 prompt chatid=%s", self._chatid)
-                self._current_task.cancel()
+                self._interrupted = True
                 try:
-                    await self._current_task
-                except (asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(self._current_task, timeout=30)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
                     pass
         else:
             await self._lock.acquire()
+
+        self._interrupted = False
 
         if self._first_msg:
             self._first_msg = False
@@ -249,9 +252,6 @@ class KiroProcess:
         self._current_task = asyncio.current_task()
         try:
             return await self._send_prompt(content, user_desc, on_chunk, timeout)
-        except asyncio.CancelledError:
-            log.info("prompt 被打断 chatid=%s", self._chatid)
-            return ""
         finally:
             self._current_task = None
             if not self._interruptible:
@@ -275,7 +275,7 @@ class KiroProcess:
                 chunk = await asyncio.wait_for(self._chunk_queue.get(), timeout=remaining)
                 if chunk is None:
                     break
-                if on_chunk:
+                if on_chunk and not self._interrupted:
                     await on_chunk(chunk)
             self._last_active = time.monotonic()
             self._history.append({"user": user_text, "assistant": self._full_text})
