@@ -24,10 +24,11 @@ kiro-cli acp --trust-all-tools
 - 👋 **入群欢迎语**：用户进入对话时自动发送欢迎消息
 - 💓 **心跳保活**：自动心跳 + 断线指数退避重连
 - ♻️ **进程池管理**：最多 10 个进程，LRU 淘汰，30 分钟空闲超时清理
-- 🧠 **长期记忆**：per-chatid SQLite 知识图谱，FTS5 全文检索 + sqlite-vec 向量语义检索
+- 🧠 **长期记忆**：全局共享 SQLite 知识图谱，FTS5 全文检索 + sqlite-vec 向量语义检索
 - ⏰ **定时任务**：REST API 管理定时任务，系统 crontab 触发，SQLite 持久化
 - 🛡️ **安全防护**：提示词注入检测 + chatid 权限分级（safe/full 模式）
-- 🧠 **元认知**：每条消息前自动思考"我知道什么"，主动检索/沉淀记忆
+- 🖼️ **多媒体消息**：图片（AES 解密）、语音（企微 STT + FunASR）、文件下载
+- 🤝 **多 Agent 协作**：4 种模式 — Single / Delegate / GroupChat / Teams
 
 ## 前置条件
 
@@ -203,6 +204,53 @@ cp channels.example.json channels.json
 
 > **安全建议**：`default` 设为 `safe`，只给你自己的私聊 `dm_YourUserId` 设 `full`。群聊里任何人都能发消息，safe 模式可防止提示词注入攻击导致执行危险操作。
 
+## 多 Agent 模式
+
+通过 `agent_mode` 字段配置不同的协作模式：
+
+| 模式 | agent_mode | 说明 | 适用场景 |
+|------|-----------|------|---------|
+| **Single** | 不填或 `single` | 单进程对话，默认模式 | 日常问答、简单任务 |
+| **Delegate** | `delegate` | 主 Agent + Worker 池，通过 tasks.json 通信 | 长任务拆分，Worker 不交互 |
+| **GroupChat** | `groupchat` | Manager 调度多个工作 Agent，共享消息 | 简单的串行多角色协作 |
+| **Teams** | `teams` | Lead + Teammates，共享任务列表 + Mailbox 通信 | 复杂开发任务，并行 + 互相通信 |
+
+### Teams 模式配置示例
+
+```json
+{
+  "dm_YourUserId": {
+    "agent_mode": "teams",
+    "lead": "team-lead",
+    "agents": ["architect-agent", "coder-agent", "reviewer-agent"],
+    "max_parallel": 3,
+    "cwd": "/path/to/workspace",
+    "mode": "full"
+  }
+}
+```
+
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `lead` | Lead 使用的 agent 名称 | `team-lead` |
+| `agents` | 可用的 Teammate agent 列表 | `[]` |
+| `max_parallel` | 最大并行 Teammate 数 | `3` |
+
+Teams 模式工作流程：
+1. 用户发送需求 → Lead 分析并拆解为任务（通过 HTTP API 写入 task list）
+2. Bridge 的 poll loop 检测到可执行任务 → 自动 spawn 对应 Teammate
+3. Teammate 执行完成 → 更新任务状态 → 通过 Mailbox 通知 Lead
+4. 所有任务完成 → 推送汇总到企微
+
+Teams 模式的 HTTP API（供 Lead/Teammate 调用）：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/teams/add_task` | 创建任务 |
+| POST | `/teams/complete_task` | 标记任务完成 |
+| POST | `/teams/fail_task` | 标记任务失败 |
+| POST | `/teams/send_mail` | 发送 Mailbox 消息 |
+
 ### 7. 启动
 
 **方式一：直接启动**
@@ -377,23 +425,43 @@ curl -s -X POST http://localhost:8900/send \
 
 ```
 kiro-wecom-bridge/
-├── main.py               # FastAPI 主服务，生命周期管理
+├── main.py               # FastAPI 主服务，生命周期管理，Teams HTTP API
 ├── ws_client.py          # 企微 WebSocket 长连接客户端
-├── channel.py            # Channel 管理 + StreamSegmenter 流式分段
-├── session.py            # ACP 进程池，per-chatid kiro-cli 进程管理
+├── channel.py            # 消息路由，按 agent_mode 分发到不同 session
+├── stream.py             # StreamSegmenter 流式分段
+├── media.py              # 多媒体处理：图片解密、语音 STT、文件下载
+├── guard.py              # 安全防护：注入检测 + 权限分级 preamble
 ├── scheduler.py          # 定时任务调度：SQLite 持久化 + 系统 crontab
-├── guard.py              # 安全防护：注入检测 + 权限分级 preamble + 元认知指令
 ├── memory.py             # 长期记忆：SQLite 实体关系图谱 + FTS5 + 向量检索
-├── memory_cli.py         # 记忆系统 CLI，供 kiro skill 通过 bash 调用
-├── install.sh            # 一键环境安装（venv + 依赖）
-├── start.sh              # 启动脚本（前置检查 + 启动）
-├── restart.sh            # 重启脚本（杀旧 + 启动新）
-├── kiro-wecom-bridge.service # systemd 服务文件
+├── memory_cli.py         # 记忆系统 CLI（兼容旧调用方式）
+├── memory_server.py      # 记忆系统 HTTP 常驻服务（端口 8901）
+├── agents/
+│   ├── process.py        # KiroProcess — kiro-cli ACP 进程封装（共用）
+│   ├── task_manager.py   # TaskManager — tasks.json CRUD（delegate/groupchat 用）
+│   ├── single/
+│   │   └── session.py    # ProcessPool — 预热池 + LRU 淘汰
+│   ├── delegate/
+│   │   └── session.py    # DelegateSession — 主 Agent + Worker 池
+│   ├── groupchat/
+│   │   └── session.py    # GroupChatSession — Manager + 工作 Agent + 共享消息
+│   └── teams/
+│       ├── jsonl_store.py # JsonlStore — JSONL + 文件锁基类
+│       ├── task_list.py  # TaskList — 任务列表（claim/complete/fail/validate）
+│       ├── mailbox.py    # Mailbox — Agent 间通信
+│       └── session.py    # TeamsSession — Lead + Teammates + poll loop
+├── skills/               # Kiro Skills
+│   ├── wecom-memory/     # 长期记忆 skill
+│   ├── wecom-scheduler/  # 定时任务 skill
+│   └── notify-wecom/     # 消息通知 skill
+├── docs/
+│   ├── multi-agent-requirements.md  # 多 Agent 需求文档
+│   ├── arch-delegate.md             # Delegate 模式架构
+│   └── arch-teams.md               # Teams 模式架构
+├── install.sh            # 一键环境安装
+├── start.sh              # 启动脚本（bridge + memory_server）
+├── restart.sh            # 重启脚本
 ├── channels.json         # 机器人配置（git ignored）
 ├── channels.example.json # 配置模板
-├── .env                  # 环境变量（git ignored）
-├── .env.example          # 环境变量模板
-├── requirements.txt
 └── README.md
 ```
 
