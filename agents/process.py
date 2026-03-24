@@ -168,6 +168,7 @@ class KiroProcess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self._session_dir,
+            limit=1024 * 1024,  # 1MB，防止长输出导致 LimitOverrunError
         )
         self._last_active = time.monotonic()
         self._reader_task = asyncio.create_task(self._reader_loop())
