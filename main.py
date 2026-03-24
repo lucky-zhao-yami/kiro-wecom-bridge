@@ -6,10 +6,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from typing import Optional
 from channel import ChannelManager
+from agents.teams.task_list import TaskList
+from agents.teams.mailbox import Mailbox
 import scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -34,6 +36,13 @@ async def _cleanup_loop():
                     await session.stop()
                     del ch._groupchats[cid]
                     log.info("回收空闲 GroupChat chatid=%s", cid)
+            # 清理空闲的 Teams 会话
+            for cid in list(ch._teams):
+                session = ch._teams[cid]
+                if session.can_recycle():
+                    await session.stop()
+                    del ch._teams[cid]
+                    log.info("回收空闲 Teams chatid=%s", cid)
 
 
 async def _daily_memory_loop():
@@ -195,6 +204,65 @@ async def update_job(job_id: str, req: JobUpdateRequest):
 async def delete_job(job_id: str):
     if not scheduler.delete_job(job_id):
         return {"ok": False, "error": "job not found"}
+    return {"ok": True}
+
+
+# ---- Task Helper HTTP API (Teams 模式) ----
+
+class AddTaskRequest(BaseModel):
+    session_dir: str
+    id: str
+    title: str
+    agent: str
+    depends_on: list[str] = []
+    gate: Optional[str] = None
+
+class CompleteTaskRequest(BaseModel):
+    session_dir: str
+    id: str
+    result: str
+
+class FailTaskRequest(BaseModel):
+    session_dir: str
+    id: str
+    error: str
+
+class SendMailRequest(BaseModel):
+    model_config = {"populate_by_name": True}
+    session_dir: str
+    to: str
+    content: str
+    from_agent: str = Field("", alias="from")
+
+
+@app.post("/teams/add_task")
+async def teams_add_task(req: AddTaskRequest):
+    import time as _t
+    task = {
+        "id": req.id, "title": req.title, "agent": req.agent,
+        "status": "pending", "assignee": None, "depends_on": req.depends_on,
+        "gate": req.gate, "created_by": "lead", "created_at": int(_t.time()),
+        "started_at": None, "finished_at": None, "result": None,
+    }
+    TaskList(req.session_dir).add_task(task)
+    return {"ok": True, "id": req.id}
+
+
+@app.post("/teams/complete_task")
+async def teams_complete_task(req: CompleteTaskRequest):
+    TaskList(req.session_dir).complete(req.id, req.result)
+    return {"ok": True, "id": req.id}
+
+
+@app.post("/teams/fail_task")
+async def teams_fail_task(req: FailTaskRequest):
+    TaskList(req.session_dir).fail(req.id, req.error)
+    return {"ok": True, "id": req.id}
+
+
+@app.post("/teams/send_mail")
+async def teams_send_mail(req: SendMailRequest):
+    Mailbox(req.session_dir).send(req.from_agent, req.to, req.content)
     return {"ok": True}
 
 
