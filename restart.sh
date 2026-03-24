@@ -13,6 +13,11 @@ for p in $(pgrep -f "kiro-cli acp" 2>/dev/null || true); do
     kill "$p" 2>/dev/null && echo "  killed acp (pid=$p)"
 done
 
+# 杀 memory_server
+for p in $(pgrep -f "memory_server.py" 2>/dev/null || true); do
+    kill "$p" 2>/dev/null && echo "  killed memory_server (pid=$p)"
+done
+
 rm -f .bridge.pid
 sleep 2
 

@@ -163,7 +163,10 @@ class GroupChatSession:
                     # 用户回复后发给 Manager
                     history = self._messages.format_for_prompt()
                     reply = await self._manager.send(
-                        f"[GroupChat 对话历史]\n{history}\n\n---\nHuman 已回复，请立即用 @ 调度下一个 Agent 继续流程。")
+                        f"[GroupChat 对话历史]\n{history}\n\n---\n"
+                        f"Human 已回复。你必须用 @AgentName 调度一个工作 Agent 执行下一步。\n"
+                        f"可用 Agent: {', '.join(self._agent_names)}\n"
+                        f"回复格式: @agent-name 具体指令")
                 else:
                     # 调度工作 Agent
                     log.info("GroupChat 调度 chatid=%s agent=%s", self._chatid, name)
@@ -196,16 +199,24 @@ class GroupChatSession:
             await self._cleanup_agents()
 
     async def dispatch_agent(self, agent_name: str, instruction: str) -> str:
-        """调度指定 Agent 执行任务"""
-        if agent_name not in self._agents:
-            agent_dir = os.path.join(self._session_dir, "agents", agent_name)
-            proc = KiroProcess(
-                f"{self._chatid}/{agent_name}", agent_dir,
-                agent=agent_name, cwd=self._cwd,
-                mode=self._mode, interruptible=False)
-            await proc.start()
-            self._agents[agent_name] = proc
-            log.info("启动工作 Agent chatid=%s agent=%s", self._chatid, agent_name)
+        """调度指定 Agent 执行任务 — 每次创建新进程，保持上下文干净"""
+        # 如果有旧进程先关掉
+        if agent_name in self._agents:
+            try:
+                await self._agents[agent_name].stop()
+            except Exception:
+                pass
+            del self._agents[agent_name]
+
+        agent_dir = os.path.join(self._session_dir, "agents", agent_name)
+        proc = KiroProcess(
+            f"{self._chatid}/{agent_name}", agent_dir,
+            agent=agent_name, cwd=self._cwd,
+            mode=self._mode, interruptible=False)
+        await proc.start()
+        self._agents[agent_name] = proc
+        log.info("启动工作 Agent chatid=%s agent=%s pid=%d",
+                 self._chatid, agent_name, proc._proc.pid)
 
         # 带上对话历史
         history = self._messages.format_for_prompt()

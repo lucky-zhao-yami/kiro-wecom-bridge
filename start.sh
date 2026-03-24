@@ -33,4 +33,10 @@ python3 -c "import fastapi, uvicorn, dotenv, websockets" 2>/dev/null || {
 
 echo "🚀 启动 kiro-wecom-bridge ..."
 echo $$ > .bridge.pid
+
+# 启动 memory 常驻服务（后台）
+python3 memory_server.py &
+MEMORY_PID=$!
+echo "  memory_server pid=$MEMORY_PID"
+
 exec python3 main.py
