@@ -175,9 +175,13 @@ class Channel:
                     await seg.finish()
             elif agent_mode == "teams":
                 session = await self._get_teams(chatid, chat_cfg)
-                result = await session.send_from_human(text, on_chunk=seg.feed)
+                # teams 模式不用流式占位，Lead 可能耗时较长
+                # 先关闭占位流，改用 send_msg 推送
+                await self.ws.send_stream(req_id, stream_id, "", finish=True)
+                result = await session.send_from_human(text)
                 if result:
-                    await seg.finish()
+                    chat_type = 1 if chatid.startswith("dm_") else 2
+                    await self.ws.send_msg(chatid, chat_type, result[:1500])
             # TODO: Phase 2 高级功能（门禁、轮次、进度推送）
             else:
                 await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)
