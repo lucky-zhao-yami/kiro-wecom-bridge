@@ -160,39 +160,61 @@ class Channel:
         """实际发送逻辑"""
         chat_cfg = self._get_chat_config(chatid)
         agent_mode = chat_cfg.get("agent_mode", "single")
-        chat_type = 1 if chatid.startswith("dm_") else 2
+        seg = StreamSegmenter(self.ws, req_id, stream_id)
+
+        async def _keepalive(interval=3):
+            """每 interval 秒发一个心跳 chunk，防止企微流超时"""
+            try:
+                while True:
+                    await asyncio.sleep(interval)
+                    await self.ws.send_stream(req_id, stream_id, " ...", finish=False)
+            except asyncio.CancelledError:
+                pass
 
         try:
-            # 先用流式发 🤔 占位，然后立即关闭流
-            await self.ws.send_stream(req_id, stream_id, "🤔", finish=True)
+            await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
+            heartbeat = asyncio.create_task(_keepalive())
+
+            async def _feed_and_cancel_heartbeat(chunk):
+                heartbeat.cancel()
+                await seg.feed(chunk)
 
             if agent_mode == "single":
                 proc = await self.pool.get_or_create(
                     chatid, agent=chat_cfg.get("agent"),
                     cwd=chat_cfg.get("cwd", WORK_DIR), mode=chat_cfg.get("mode", "full"))
-                result = await proc.send(text)
+                result = await proc.send(text, on_chunk=_feed_and_cancel_heartbeat)
+                heartbeat.cancel()
+                if result:
+                    await seg.finish()
             elif agent_mode == "delegate":
                 session = await self._get_delegate(chatid, chat_cfg)
-                result = await session.send_to_main(text)
+                result = await session.send_to_main(text, on_chunk=_feed_and_cancel_heartbeat)
+                heartbeat.cancel()
+                if result:
+                    await seg.finish()
             elif agent_mode == "groupchat":
                 session = await self._get_groupchat(chatid, chat_cfg)
-                result = await session.send_from_human(text)
+                result = await session.send_from_human(text, on_chunk=_feed_and_cancel_heartbeat)
+                heartbeat.cancel()
+                if result:
+                    await seg.finish()
             elif agent_mode == "teams":
+                heartbeat.cancel()
                 session = await self._get_teams(chatid, chat_cfg)
+                await self.ws.send_stream(req_id, stream_id, "", finish=True)
                 result = await session.send_from_human(text)
+                if result:
+                    chat_type = 1 if chatid.startswith("dm_") else 2
+                    await self.ws.send_msg(chatid, chat_type, result[:1500])
             else:
-                await self.ws.send_msg(chatid, chat_type, f"未知的 agent_mode: {agent_mode}")
-                return
-
-            if result:
-                # 按 1500 字分段发送
-                for i in range(0, len(result), 1500):
-                    await self.ws.send_msg(chatid, chat_type, result[i:i+1500])
+                heartbeat.cancel()
+                await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             log.error("agent 异常 req=%s: %s", req_id, e)
-            await self.ws.send_msg(chatid, chat_type, f"❌ 处理异常: {e}")
+            await self.ws.send_stream(req_id, stream_id, f"❌ 处理异常: {e}", finish=True)
 
     # ---- 事件回调 ----
 
