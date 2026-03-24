@@ -121,6 +121,7 @@ class TeamsSession:
         self._prev_statuses: dict[str, str] = {}
         self._validated = False
         self._paused = False
+        self._sending = False
 
     # ---- 生命周期 ----
 
@@ -162,9 +163,16 @@ class TeamsSession:
 
     async def send_from_human(self, text: str, on_chunk=None) -> str:
         self._last_active = time.monotonic()
+        # Lead 正在处理中，不重复发送
+        if self._sending:
+            return "收到，Lead 正在处理上一条消息，请稍候。"
         await self._ensure_lead()
         prompt = self._build_lead_prompt(text)
-        result = await self._lead.send(prompt, on_chunk=on_chunk)
+        self._sending = True
+        try:
+            result = await self._lead.send(prompt, on_chunk=on_chunk)
+        finally:
+            self._sending = False
         if self._poll_task is None or self._poll_task.done():
             self._poll_task = asyncio.create_task(self._poll_loop())
         return result
