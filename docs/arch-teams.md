@@ -106,8 +106,9 @@ class TeamsSession:
 {
   "dm_ZhaoXingPing": {
     "agent_mode": "teams",
-    "lead": "orchestrator-agent",
+    "lead": "team-lead",
     "agents": ["architect-agent", "coder-agent", "reviewer-agent", "qa-agent"],
+    "max_parallel": 3,
     "cwd": "/mnt/d/workspace/all",
     "mode": "full"
   }
@@ -166,8 +167,8 @@ Lead 汇总结果推送企微: "✅ 所有任务完成"
 
 ### Phase 2: Lead + Teammate 生命周期
 - [ ] Lead 启动，接收用户消息，拆解任务
-- [ ] Teammate 按需 spawn，claim 任务，完成后销毁
-- [ ] 后台 poll loop：检查任务状态，推送进度
+- [ ] Teammate 按需 spawn，执行任务，完成后销毁
+- [ ] 后台 poll loop：检查任务状态，spawn teammate，推送进度
 
 ### Phase 3: 通信与协调
 - [ ] Mailbox 集成到 teammate prompt
@@ -175,14 +176,26 @@ Lead 汇总结果推送企微: "✅ 所有任务完成"
 - [ ] Lead 汇总结果推送用户
 
 ### Phase 4: 企微交互
-- [ ] 进度推送
+- [ ] 文字进度推送（任务状态变更时）
 - [ ] 用户中途干预（暂停/取消/修改任务）
 - [ ] @Human 门禁（某些任务需要用户确认才继续）
+
+### Phase 5: 进度可视化（后续）
+- [ ] 生成 HTML 进度页面
+- [ ] 上传到云服务器，返回公网 URL
+- [ ] 任务状态变更时自动更新页面
+- [ ] 企微发送链接，用户点击查看实时进度
 
 ## 关键设计决策
 
 ### Q: Teammate 怎么知道自己该 claim 哪个任务？
-A: Bridge 的 poll loop 检查 task list，找到 pending + 无未完成依赖的任务，匹配 agent 类型，spawn 对应 teammate 并传入任务。不是 teammate 自己去抢。
+A: Bridge 的 poll loop 检查 task list，找到 pending + 无未完成依赖的任务，根据任务的 `agent` 字段 spawn 对应 teammate 并传入任务描述。不是 teammate 自己去抢。
+
+### Q: Lead 用什么 agent？
+A: 新建 `team-lead` agent，prompt 里定义：可用 teammates 列表、task list JSON 格式、mailbox 使用方式、什么时候自己干什么时候派任务。Lead 有完整工具（code/grep/fs_read），可以自己分析代码再拆任务。
+
+### Q: Teammate 需要区分角色吗？
+A: 需要。每个 teammate 用配置中指定的 agent 启动（architect/coder/reviewer），不同角色有不同的 prompt 和工具权限。任务的 `agent` 字段由 Lead 在创建任务时指定。
 
 ### Q: 任务失败怎么办？
 A: Lead 收到失败通知后决定：重试、创建新任务、或通知用户。
