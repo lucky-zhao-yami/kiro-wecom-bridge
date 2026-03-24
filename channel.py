@@ -26,6 +26,7 @@ class Channel:
         self._groupchats: dict[str, GroupChatSession] = {}
         self._teams: dict[str, TeamsSession] = {}
         self._chats = config.get("chats", {"default": {"agent": None, "cwd": WORK_DIR}})
+        self._stream_locks: dict[str, asyncio.Lock] = {}  # per-chatid 流锁
 
     def _get_chat_config(self, chatid: str) -> dict:
         return self._chats.get(chatid, self._chats.get("default", {}))
@@ -149,6 +150,14 @@ class Channel:
 
     async def _send_to_agent(self, req_id: str, stream_id: str, chatid: str, text: str):
         """统一发送到 agent — 根据 agent_mode 路由"""
+        # per-chatid 流锁，防止连发消息时两个流冲突
+        if chatid not in self._stream_locks:
+            self._stream_locks[chatid] = asyncio.Lock()
+        async with self._stream_locks[chatid]:
+            await self._do_send_to_agent(req_id, stream_id, chatid, text)
+
+    async def _do_send_to_agent(self, req_id: str, stream_id: str, chatid: str, text: str):
+        """实际发送逻辑"""
         chat_cfg = self._get_chat_config(chatid)
         agent_mode = chat_cfg.get("agent_mode", "single")
         seg = StreamSegmenter(self.ws, req_id, stream_id)
