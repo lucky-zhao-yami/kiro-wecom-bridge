@@ -162,12 +162,12 @@ class Channel:
         agent_mode = chat_cfg.get("agent_mode", "single")
         seg = StreamSegmenter(self.ws, req_id, stream_id)
 
-        async def _keepalive(interval=5):
+        async def _keepalive(interval=3):
             """每 interval 秒发一个心跳 chunk，防止企微流超时"""
             try:
                 while True:
                     await asyncio.sleep(interval)
-                    await self.ws.send_stream(req_id, stream_id, " .", finish=False)
+                    await self.ws.send_stream(req_id, stream_id, " ...", finish=False)
             except asyncio.CancelledError:
                 pass
 
