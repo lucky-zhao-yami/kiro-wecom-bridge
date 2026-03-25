@@ -67,7 +67,9 @@ async def _run_agent(state: SOPState, agent_name: str, prompt: str) -> str:
     """复用 KiroProcess — 同一 task 同一 agent 共享进程和上下文"""
     key = (state["task_id"], agent_name)
     proc = _agent_procs.get(key)
-    if not proc or not proc.alive:
+    if proc and proc.alive:
+        log.info("SOP 复用进程 agent=%s pid=%s", agent_name, proc._proc.pid if proc._proc else "?")
+    else:
         session_dir = os.path.join(_task_dir(state["task_id"]), "agents", agent_name)
         os.makedirs(session_dir, exist_ok=True)
         proc = KiroProcess(
@@ -75,6 +77,7 @@ async def _run_agent(state: SOPState, agent_name: str, prompt: str) -> str:
             agent=agent_name, cwd=state["cwd"], mode=state["mode"])
         await proc.start()
         _agent_procs[key] = proc
+        log.info("SOP 新建进程 agent=%s key=%s", agent_name, key)
     return await proc.send(prompt, timeout=600) or ""
 
 
@@ -313,10 +316,12 @@ class SOPSession:
         )
         self._thread_id = chatid
         self._running = False
+        self._started = False
         self._task: asyncio.Task | None = None
 
     async def start(self, task_id: str, services: list[str], initial_request: str):
         """启动 SOP"""
+        self._started = True
         state = SOPState(
             task_id=task_id, chatid=self._chatid, services=services,
             cwd=self._config.get("cwd", WORK_DIR),
@@ -359,3 +364,7 @@ class SOPSession:
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def started(self) -> bool:
+        return self._started

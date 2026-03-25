@@ -226,7 +226,8 @@ class Channel:
                 heartbeat.cancel()
                 await self.ws.send_stream(req_id, stream_id, "🚀 SOP 流程处理中...", finish=True)
                 session = await self._get_sop(chatid, chat_cfg)
-                if session.running:
+                if session.started:
+                    # 已启动过（可能在 interrupt 暂停中），恢复
                     await session.resume(text)
                 else:
                     task_id = f"TASK-{int(time.time())}"
