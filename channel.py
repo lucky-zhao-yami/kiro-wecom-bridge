@@ -1,5 +1,5 @@
 """Channel: 企微消息路由 — 根据 agent_mode 分发到不同模式"""
-import asyncio, json, logging, os, uuid
+import asyncio, json, logging, os, time, uuid
 
 from ws_client import WsClient
 from stream import StreamSegmenter
@@ -9,6 +9,7 @@ from agents.single.session import ProcessPool
 from agents.delegate.session import DelegateSession
 from agents.groupchat.session import GroupChatSession
 from agents.teams.session import TeamsSession
+from agents.sop.session import SOPSession
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class Channel:
         self._delegates: dict[str, DelegateSession] = {}
         self._groupchats: dict[str, GroupChatSession] = {}
         self._teams: dict[str, TeamsSession] = {}
+        self._sops: dict[str, SOPSession] = {}
         self._chats = config.get("chats", {"default": {"agent": None, "cwd": WORK_DIR}})
         self._stream_locks: dict[str, asyncio.Lock] = {}  # per-chatid 流锁
 
@@ -220,6 +222,17 @@ class Channel:
                 if result:
                     chat_type = 1 if chatid.startswith("dm_") else 2
                     await self.ws.send_msg(chatid, chat_type, result[:1500])
+            elif agent_mode == "sop":
+                heartbeat.cancel()
+                await self.ws.send_stream(req_id, stream_id, "🚀 SOP 流程处理中...", finish=True)
+                session = await self._get_sop(chatid, chat_cfg)
+                if session.running:
+                    await session.resume(text)
+                else:
+                    # 首次启动需要 task_id 和 services，从消息中提取或用默认值
+                    task_id = chat_cfg.get("task_id", f"TASK-{int(time.time())}")
+                    services = chat_cfg.get("services", [])
+                    await session.start(task_id, services, text)
             else:
                 heartbeat.cancel()
                 await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)
@@ -251,6 +264,11 @@ class Channel:
             await session.start()
             self._teams[chatid] = session
         return self._teams[chatid]
+
+    async def _get_sop(self, chatid: str, chat_cfg: dict) -> SOPSession:
+        if chatid not in self._sops:
+            self._sops[chatid] = SOPSession(chatid, chat_cfg, self.ws)
+        return self._sops[chatid]
 
     async def _on_event(self, req_id: str, body: dict):
         event_type = body.get("event", {}).get("eventtype", "")
