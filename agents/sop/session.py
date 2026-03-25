@@ -135,8 +135,8 @@ async def pm_confirm(state: SOPState) -> dict:
     user = state.get("human_input", "").strip().lower()
     if user in ("确认", "ok", "pass", "yes", "通过", ""):
         return {"phase": "api_design", "human_input": ""}
-    # 用户有修改意见，重新生成
-    return {"phase": "pm_generate", "human_input": state["human_input"]}
+    # 用户有修改意见，回到 pm_ask 重新对话
+    return {"phase": "pm_ask", "human_input": state["human_input"]}
 
 
 async def api_design_node(state: SOPState) -> dict:
@@ -288,7 +288,8 @@ def build_sop_graph() -> StateGraph:
     g.add_conditional_edges("pm_ask", lambda s: s.get("phase", "pm_ask"),
                             {"pm_ask": "pm_wait", "pm_confirm": "pm_confirm"})
     g.add_edge("pm_wait", "pm_ask")  # 用户回答后回到 pm_ask
-    g.add_conditional_edges("pm_confirm", lambda s: s.get("phase", "api_design"))
+    g.add_conditional_edges("pm_confirm", lambda s: s.get("phase", "api_design"),
+                            {"api_design": "api_design", "pm_ask": "pm_ask"})
     g.add_edge("api_design", "architect")
     g.add_edge("architect", "arch_review")
     g.add_conditional_edges("arch_review", arch_review_route)
