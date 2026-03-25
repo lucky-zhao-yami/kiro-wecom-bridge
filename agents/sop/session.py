@@ -73,34 +73,50 @@ async def _run_agent(state: SOPState, agent_name: str, prompt: str) -> str:
 # ── 节点 ──
 
 async def pm_ask(state: SOPState) -> dict:
-    """Phase 1a: PM 分析需求，输出需要确认的问题"""
+    """Phase 1: PM 多轮对话 — 分析需求、提问、判断信息是否充分"""
     _ensure_dirs(state["task_id"])
-    prompt = (
-        f"你是 PM，任务 {state['task_id']}。\n"
-        f"用户需求: {state.get('human_input', '')}\n\n"
-        f"请分析需求，列出所有需要跟用户确认的问题（功能边界、业务规则、涉及服务、数据模型、验收标准等）。\n"
-        f"打包提问，不要一个一个问。如果信息已经充分，直接说'信息充分，可以生成需求文档'。"
-    )
+    prev = state.get("requirements", "")
+    user_input = state.get("human_input", "")
+
+    if not prev:
+        prompt = (
+            f"你是 PM，任务 {state['task_id']}。\n"
+            f"用户需求: {user_input}\n\n"
+            f"请分析需求，列出所有需要确认的问题（功能边界、业务规则、涉及服务、数据模型、验收标准等）。\n"
+            f"打包提问。\n\n"
+            f"如果信息已经完全充分，在回复开头写 [INFO_SUFFICIENT]，然后直接生成需求文档。"
+        )
+    else:
+        prompt = (
+            f"你是 PM，任务 {state['task_id']}。\n"
+            f"之前的对话:\n{prev}\n\n"
+            f"用户最新回复:\n{user_input}\n\n"
+            f"请判断信息是否充分。不充分就继续提问。\n"
+            f"充分则在回复开头写 [INFO_SUFFICIENT]，然后直接生成需求文档。"
+        )
+
     result = await _run_agent(state, "orchestrator-agent", prompt)
-    return {"notify": f"📋 PM 分析完成:\n\n{result[:1500]}", "requirements": result}
+
+    if "[INFO_SUFFICIENT]" in result:
+        doc = result.replace("[INFO_SUFFICIENT]", "").strip()
+        doc_path = os.path.join(_task_dir(state["task_id"]), "01_pm_docs", "requirements.md")
+        with open(doc_path, "w") as f:
+            f.write(doc)
+        return {
+            "requirements": doc, "phase": "pm_confirm", "human_input": "",
+            "notify": f"📄 需求文档已生成，请确认:\n\n{doc[:1500]}",
+        }
+    else:
+        return {
+            "requirements": (prev + f"\n\nPM: {result}\nUser: {user_input}") if prev else result,
+            "phase": "pm_ask", "human_input": "",
+            "notify": f"📋 PM 提问:\n\n{result[:1500]}",
+        }
 
 
-async def pm_generate(state: SOPState) -> dict:
-    """Phase 1b: 根据用户回答生成需求文档"""
-    prompt = (
-        f"任务 {state['task_id']}。\n"
-        f"之前的分析:\n{state['requirements']}\n\n"
-        f"用户回复:\n{state.get('human_input', '')}\n\n"
-        f"请生成完整的需求文档，包含：功能需求、业务规则、涉及服务、数据模型、验收标准。"
-    )
-    result = await _run_agent(state, "orchestrator-agent", prompt)
-    doc_path = os.path.join(_task_dir(state["task_id"]), "01_pm_docs", "requirements.md")
-    with open(doc_path, "w") as f:
-        f.write(result)
-    return {
-        "requirements": result,
-        "notify": f"📄 需求文档已生成，请确认:\n\n{result[:1500]}"
-    }
+async def pm_wait(state: SOPState) -> dict:
+    """PM 等待用户回答 — interrupt 在这里"""
+    return {}  # 用户输入通过 resume → update_state 注入 human_input
 
 
 async def pm_confirm(state: SOPState) -> dict:
@@ -245,7 +261,7 @@ def build_sop_graph() -> StateGraph:
     g = StateGraph(SOPState)
 
     g.add_node("pm_ask", pm_ask)
-    g.add_node("pm_generate", pm_generate)
+    g.add_node("pm_wait", pm_wait)
     g.add_node("pm_confirm", pm_confirm)
     g.add_node("api_design", api_design_node)
     g.add_node("architect", architect_node)
@@ -257,8 +273,10 @@ def build_sop_graph() -> StateGraph:
     g.add_node("deliver", deliver_node)
 
     g.set_entry_point("pm_ask")
-    g.add_edge("pm_ask", "pm_generate")          # interrupt 后用户回答 → 生成文档
-    g.add_edge("pm_generate", "pm_confirm")       # interrupt 后用户确认
+    # pm_ask → pm_wait(等回答) 或 pm_confirm(信息充分)
+    g.add_conditional_edges("pm_ask", lambda s: s.get("phase", "pm_ask"),
+                            {"pm_ask": "pm_wait", "pm_confirm": "pm_confirm"})
+    g.add_edge("pm_wait", "pm_ask")  # 用户回答后回到 pm_ask
     g.add_conditional_edges("pm_confirm", lambda s: s.get("phase", "api_design"))
     g.add_edge("api_design", "architect")
     g.add_edge("architect", "arch_review")
@@ -282,7 +300,7 @@ class SOPSession:
         self._checkpointer = MemorySaver()
         self._graph = build_sop_graph().compile(
             checkpointer=self._checkpointer,
-            interrupt_before=["pm_generate", "pm_confirm",
+            interrupt_before=["pm_wait", "pm_confirm",
                               "human_confirm_arch", "human_confirm_code"]
         )
         self._thread_id = chatid
