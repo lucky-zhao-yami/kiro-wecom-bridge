@@ -229,10 +229,8 @@ class Channel:
                 if session.running:
                     await session.resume(text)
                 else:
-                    # 首次启动需要 task_id 和 services，从消息中提取或用默认值
-                    task_id = chat_cfg.get("task_id", f"TASK-{int(time.time())}")
-                    services = chat_cfg.get("services", [])
-                    await session.start(task_id, services, text)
+                    task_id = f"TASK-{int(time.time())}"
+                    await session.start(task_id, [], text)
             else:
                 heartbeat.cancel()
                 await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)
