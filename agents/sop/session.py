@@ -92,6 +92,7 @@ async def pm_ask(state: SOPState) -> dict:
     if not prev:
         prompt = (
             f"你是 PM，任务 {state['task_id']}。\n"
+            f"⚠️ 你只跟当前用户对话，禁止联系其他人、禁止调用 notify-wecom、禁止发送消息给任何第三方。\n\n"
             f"用户需求: {user_input}\n\n"
             f"请分析需求，列出所有需要确认的问题（功能边界、业务规则、涉及服务、数据模型、验收标准等）。\n"
             f"打包提问。\n\n"
@@ -100,6 +101,7 @@ async def pm_ask(state: SOPState) -> dict:
     else:
         prompt = (
             f"你是 PM，任务 {state['task_id']}。\n"
+            f"⚠️ 你只跟当前用户对话，禁止联系其他人、禁止调用 notify-wecom、禁止发送消息给任何第三方。\n\n"
             f"之前的对话:\n{prev}\n\n"
             f"用户最新回复:\n{user_input}\n\n"
             f"请判断信息是否充分。不充分就继续提问。\n"
