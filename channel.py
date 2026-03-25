@@ -224,14 +224,19 @@ class Channel:
                     await self.ws.send_msg(chatid, chat_type, result[:1500])
             elif agent_mode == "sop":
                 heartbeat.cancel()
-                await self.ws.send_stream(req_id, stream_id, "", finish=True)
                 session = await self._get_sop(chatid, chat_cfg)
                 if session.started:
-                    # 已启动过（可能在 interrupt 暂停中），恢复
-                    await session.resume(text)
+                    await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
+                    result = await session.resume_and_wait(text)
                 else:
+                    await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
                     task_id = f"TASK-{int(time.time())}"
-                    await session.start(task_id, [], text)
+                    result = await session.start_and_wait(task_id, [], text)
+                if result:
+                    await seg.feed(result)
+                    await seg.finish()
+                else:
+                    await self.ws.send_stream(req_id, stream_id, "⏳ 处理中，完成后通知你", finish=True)
             else:
                 heartbeat.cancel()
                 await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)

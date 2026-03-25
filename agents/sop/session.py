@@ -321,9 +321,33 @@ class SOPSession:
         self._task: asyncio.Task | None = None
 
     async def start(self, task_id: str, services: list[str], initial_request: str):
-        """启动 SOP"""
+        """启动 SOP（后台）"""
         self._started = True
-        state = SOPState(
+        state = self._make_state(task_id, services, initial_request)
+        config = {"configurable": {"thread_id": self._thread_id}}
+        self._task = asyncio.create_task(self._run(state, config))
+
+    async def start_and_wait(self, task_id: str, services: list[str], initial_request: str) -> str:
+        """启动 SOP 并等待第一个 interrupt，返回 notify 消息"""
+        self._started = True
+        state = self._make_state(task_id, services, initial_request)
+        config = {"configurable": {"thread_id": self._thread_id}}
+        return await self._run_and_get_notify(state, config)
+
+    async def resume(self, human_input: str):
+        """恢复（后台）"""
+        config = {"configurable": {"thread_id": self._thread_id}}
+        self._graph.update_state(config, {"human_input": human_input})
+        self._task = asyncio.create_task(self._run(None, config))
+
+    async def resume_and_wait(self, human_input: str) -> str:
+        """恢复并等待下一个 interrupt，返回 notify 消息"""
+        config = {"configurable": {"thread_id": self._thread_id}}
+        self._graph.update_state(config, {"human_input": human_input})
+        return await self._run_and_get_notify(None, config)
+
+    def _make_state(self, task_id, services, initial_request):
+        return SOPState(
             task_id=task_id, chatid=self._chatid, services=services,
             cwd=self._config.get("cwd", WORK_DIR),
             mode=self._config.get("mode", "full"),
@@ -332,14 +356,21 @@ class SOPSession:
             phase="pm_ask", arch_review_count=0, code_review_count=0,
             review_result="", human_input=initial_request, notify="",
         )
-        config = {"configurable": {"thread_id": self._thread_id}}
-        self._task = asyncio.create_task(self._run(state, config))
 
-    async def resume(self, human_input: str):
-        """用户回复后恢复"""
-        config = {"configurable": {"thread_id": self._thread_id}}
-        self._graph.update_state(config, {"human_input": human_input})
-        self._task = asyncio.create_task(self._run(None, config))
+    async def _run_and_get_notify(self, state, config) -> str:
+        """执行图直到 interrupt，返回 notify"""
+        self._running = True
+        try:
+            if state:
+                result = await self._graph.ainvoke(state, config)
+            else:
+                result = await self._graph.ainvoke(None, config)
+            return (result or {}).get("notify", "")
+        except Exception as e:
+            log.error("SOP 异常 chatid=%s: %s", self._chatid, e)
+            return f"❌ SOP 异常: {e}"
+        finally:
+            self._running = False
 
     async def _run(self, state, config):
         """执行图，遇到 interrupt 时推送通知"""
