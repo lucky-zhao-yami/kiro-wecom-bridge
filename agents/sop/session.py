@@ -24,6 +24,17 @@ from agents.process import KiroProcess
 log = logging.getLogger("agents.sop")
 
 WORK_DIR = os.getenv("KIRO_WORK_DIR", "/mnt/d/workspace/all")
+AGENT_WORKSPACE_DIR = "/mnt/d/workspace/agent-workspaces"
+
+AGENT_CWD_MAP = {
+    "orchestrator-agent": os.path.join(AGENT_WORKSPACE_DIR, "pm"),
+    "api-designer-agent": os.path.join(AGENT_WORKSPACE_DIR, "architect"),
+    "architect-agent": os.path.join(AGENT_WORKSPACE_DIR, "architect"),
+    "coder-agent": os.path.join(AGENT_WORKSPACE_DIR, "coder"),
+    "reviewer-agent": os.path.join(AGENT_WORKSPACE_DIR, "reviewer"),
+    "doc-engineer-agent": os.path.join(AGENT_WORKSPACE_DIR, "coder"),
+    "groupchat-manager": os.path.join(AGENT_WORKSPACE_DIR, "manager"),
+}
 AI_WORKSPACE = os.path.join(WORK_DIR, "ai-workspace")
 
 
@@ -72,12 +83,13 @@ async def _run_agent(state: SOPState, agent_name: str, prompt: str) -> str:
     else:
         session_dir = os.path.join(_task_dir(state["task_id"]), "agents", agent_name)
         os.makedirs(session_dir, exist_ok=True)
+        cwd = AGENT_CWD_MAP.get(agent_name, state["cwd"])
         proc = KiroProcess(
             f"{state['chatid']}/sop/{agent_name}", session_dir,
-            agent=agent_name, cwd=state["cwd"], mode=state["mode"])
+            agent=agent_name, cwd=cwd, mode=state["mode"])
         await proc.start()
         _agent_procs[key] = proc
-        log.info("SOP 新建进程 agent=%s key=%s", agent_name, key)
+        log.info("SOP 新建进程 agent=%s cwd=%s", agent_name, cwd)
     return await proc.send(prompt, timeout=600) or ""
 
 
