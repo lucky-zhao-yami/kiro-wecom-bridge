@@ -110,7 +110,7 @@ class GroupChatSession:
             return "收到，后台任务正在执行中，完成后会通知你。"
 
         # 发给 Manager
-        history = self._messages.format_for_prompt()
+        history = self._messages.format_for_prompt(last_n=10)
         prompt = self._build_manager_prompt(history, text)
         result = await self._manager.send(prompt, on_chunk=on_chunk)
 
@@ -125,12 +125,20 @@ class GroupChatSession:
 
     def _build_manager_prompt(self, history: str, latest_msg: str) -> str:
         agents_list = ", ".join(self._agent_names)
+        resume_hint = ""
+        msg_count = len(self._messages.read())
+        if msg_count > 1:
+            resume_hint = (
+                f"\n**注意：这是恢复的会话，之前已有 {msg_count} 条对话记录。"
+                f"请仔细阅读对话历史，理解之前在做什么，然后继续。**\n"
+            )
         return (
-            f"[GroupChat 对话历史]\n{history}\n\n"
+            f"[GroupChat 对话历史（最近 10 条）]\n{history}\n\n"
             f"---\n"
             f"你是 Manager，可用的工作 Agent: {agents_list}\n"
             f"共享消息文件: {self._messages._path}\n"
-            f"任务清单文件: {os.path.join(self._session_dir, 'tasks.json')}\n\n"
+            f"任务清单文件: {os.path.join(self._session_dir, 'tasks.json')}\n"
+            f"{resume_hint}\n"
             f"**重要：你必须自动驱动整个流程。** 当一个 Agent 完成后，立即用 @ 调度下一个 Agent，不要停下来等用户。\n"
             f"只有在需要用户做决策时才 @Human。\n\n"
             f"回复格式：\n"
