@@ -90,6 +90,7 @@ async def pm_ask(state: SOPState) -> dict:
     user_input = state.get("human_input", "")
 
     if not prev:
+        # 首次
         prompt = (
             f"你是 PM，任务 {state['task_id']}。\n"
             f"⚠️ 你只跟当前用户对话，禁止联系其他人、禁止调用 notify-wecom、禁止发送消息给任何第三方。\n\n"
@@ -99,11 +100,9 @@ async def pm_ask(state: SOPState) -> dict:
             f"如果信息已经完全充分，在回复开头写 [INFO_SUFFICIENT]，然后直接生成需求文档。"
         )
     else:
+        # 后续轮次——进程有完整对话历史，只发用户新回复
         prompt = (
-            f"你是 PM，任务 {state['task_id']}。\n"
-            f"⚠️ 你只跟当前用户对话，禁止联系其他人、禁止调用 notify-wecom、禁止发送消息给任何第三方。\n\n"
-            f"之前的对话:\n{prev}\n\n"
-            f"用户最新回复:\n{user_input}\n\n"
+            f"用户回复:\n{user_input}\n\n"
             f"请判断信息是否充分。不充分就继续提问。\n"
             f"充分则在回复开头写 [INFO_SUFFICIENT]，然后直接生成需求文档。"
         )
@@ -121,7 +120,7 @@ async def pm_ask(state: SOPState) -> dict:
         }
     else:
         return {
-            "requirements": (prev + f"\n\nPM: {result}\nUser: {user_input}") if prev else result,
+            "requirements": "pm_in_progress",
             "phase": "pm_ask", "human_input": "",
             "notify": f"📋 PM 提问:\n\n{result[:1500]}",
         }
