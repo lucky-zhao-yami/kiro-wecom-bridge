@@ -226,10 +226,10 @@ class Channel:
                 heartbeat.cancel()
                 session = await self._get_sop(chatid, chat_cfg)
                 if session.started:
-                    await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
+                    await self.ws.send_stream(req_id, stream_id, "🔄 SOP 继续处理中...", finish=False)
                     result = await session.resume_and_wait(text)
                 else:
-                    await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
+                    await self.ws.send_stream(req_id, stream_id, "🚀 SOP 流程启动中...", finish=False)
                     task_id = f"TASK-{int(time.time())}"
                     result = await session.start_and_wait(task_id, [], text)
                 if result:
