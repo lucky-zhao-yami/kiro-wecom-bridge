@@ -45,6 +45,17 @@ class Channel:
             chatid = f"dm_{userid}"
         log.info("收到消息 req=%s chatid=%s userid=%s type=%s", req_id, chatid, userid, msgtype)
 
+        # 提取引用消息
+        quote_text = ""
+        if "quote" in body:
+            q = body["quote"]
+            qt = q.get("msgtype", "")
+            if qt == "text":
+                quote_text = q.get("text", {}).get("content", "")
+            elif qt == "mixed":
+                parts = [i.get("text", {}).get("content", "") for i in q.get("mixed", {}).get("msg_item", []) if i.get("msgtype") == "text"]
+                quote_text = " ".join(p for p in parts if p)
+
         if msgtype == "mixed":
             asyncio.create_task(self._process_mixed(req_id, chatid, userid, body.get("mixed", {})))
             return
@@ -83,6 +94,8 @@ class Channel:
             return
 
         text = f"[{userid}]: {text}"
+        if quote_text:
+            text = f"[{userid}](引用: {quote_text}): {text}"
         stream_id = uuid.uuid4().hex[:16]
         asyncio.create_task(self._process_and_reply(req_id, stream_id, chatid, text))
 
