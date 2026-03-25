@@ -121,6 +121,7 @@ async def pm_ask(state: SOPState) -> dict:
         )
 
     result = await _run_agent(state, "pm-agent", prompt)
+    log.info("PM 回复 (前200字): %s", result[:200].replace('\n', ' '))
 
     if "[INFO_SUFFICIENT]" in result:
         doc = result.replace("[INFO_SUFFICIENT]", "").strip()
@@ -129,7 +130,7 @@ async def pm_ask(state: SOPState) -> dict:
             f.write(doc)
         return {
             "requirements": doc, "phase": "pm_confirm", "human_input": "",
-            "notify": f"📄 需求文档已生成，请确认:\n\n{doc[:1500]}",
+            "notify": f"📄 需求文档已生成，请确认:\n\n{doc[:1500]}{CONFIRM_HINT}",
         }
     else:
         return {
@@ -144,13 +145,23 @@ async def pm_wait(state: SOPState) -> dict:
     return {}  # 用户输入通过 resume → update_state 注入 human_input
 
 
+CONFIRM_WORDS = {"确认", "ok", "pass", "yes", "通过", "没问题", "可以", "行", "好", "好的", "同意", "lgtm", "没意见", "确定"}
+
+
+def _is_confirm(text: str) -> bool:
+    t = text.strip().lower().rstrip("。.！!~")
+    return t in CONFIRM_WORDS or t == ""
+
+
+CONFIRM_HINT = "\n\n💡 回复「确认」继续下一步，或提出修改意见。"
+
+
 async def pm_confirm(state: SOPState) -> dict:
     """Phase 1c: 用户确认需求文档"""
-    user = state.get("human_input", "").strip().lower()
-    if user in ("确认", "ok", "pass", "yes", "通过", ""):
+    user = state.get("human_input", "").strip()
+    if _is_confirm(user):
         return {"phase": "api_design", "human_input": ""}
-    # 用户有修改意见，回到 pm_ask 重新对话
-    return {"phase": "pm_ask", "human_input": state["human_input"]}
+    return {"phase": "pm_ask", "human_input": user}
 
 
 async def api_design_node(state: SOPState) -> dict:
@@ -210,12 +221,12 @@ def arch_review_route(state: SOPState) -> str:
 
 async def human_confirm_arch(state: SOPState) -> dict:
     """等待用户确认架构"""
-    user = state.get("human_input", "").strip().lower()
-    if user in ("确认", "ok", "pass", "yes", "通过"):
+    user = state.get("human_input", "").strip()
+    if _is_confirm(user):
         return {"phase": "coder", "human_input": "", "notify": "👍 架构已确认，开始编码"}
     elif user:
-        return {"review_feedback": state["human_input"], "phase": "architect", "human_input": ""}
-    return {"notify": f"🏗️ 架构审查完成（{state['arch_review_count']}轮），请确认或提出修改意见。"}
+        return {"review_feedback": user, "phase": "architect", "human_input": ""}
+    return {"notify": f"🏗️ 架构审查完成（{state['arch_review_count']}轮），请确认或提出修改意见。{CONFIRM_HINT}"}
 
 
 async def coder_node(state: SOPState) -> dict:
@@ -260,12 +271,12 @@ def code_review_route(state: SOPState) -> str:
 
 
 async def human_confirm_code(state: SOPState) -> dict:
-    user = state.get("human_input", "").strip().lower()
-    if user in ("确认", "ok", "pass", "yes", "通过"):
+    user = state.get("human_input", "").strip()
+    if _is_confirm(user):
         return {"phase": "deliver", "human_input": "", "notify": "👍 代码已确认，开始交付"}
     elif user:
-        return {"review_feedback": state["human_input"], "phase": "coder", "human_input": ""}
-    return {"notify": f"🔍 代码审查完成（{state['code_review_count']}轮），请确认或提出修改意见。"}
+        return {"review_feedback": user, "phase": "coder", "human_input": ""}
+    return {"notify": f"🔍 代码审查完成（{state['code_review_count']}轮），请确认或提出修改意见。{CONFIRM_HINT}"}
 
 
 async def deliver_node(state: SOPState) -> dict:
