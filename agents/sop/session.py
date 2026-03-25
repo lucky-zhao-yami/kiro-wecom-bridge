@@ -37,20 +37,6 @@ AGENT_CWD_MAP = {
     "groupchat-manager": os.path.join(AGENT_WORKSPACE_DIR, "manager"),
     "classifier-agent": os.path.join(AGENT_WORKSPACE_DIR, "classifier"),
 }
-
-
-async def _classify_intent(text: str) -> str:
-    """用 classifier-agent 判断用户意图，返回 CONFIRM 或 MODIFY"""
-    session_dir = os.path.join(AI_WORKSPACE, "_classifier")
-    os.makedirs(session_dir, exist_ok=True)
-    proc = KiroProcess(
-        "_classifier", session_dir,
-        agent="classifier-agent",
-        cwd=os.path.join(AGENT_WORKSPACE_DIR, "classifier"),
-        mode="full")
-    await proc.start()
-    result = await proc.send(text, timeout=60) or ""
-    return "CONFIRM" if "CONFIRM" in result.upper() else "MODIFY"
 AI_WORKSPACE = os.path.join(WORK_DIR, "ai-workspace")
 
 
@@ -160,24 +146,31 @@ async def pm_wait(state: SOPState) -> dict:
     return {}  # 用户输入通过 resume → update_state 注入 human_input
 
 
-CONFIRM_WORDS = {"确认", "ok", "pass", "yes", "通过", "没问题", "可以", "行", "好", "好的", "同意", "lgtm", "没意见", "确定"}
-
-
 def _is_confirm(text: str) -> bool:
+    """判断用户意图是否为确认"""
     t = text.strip().lower().rstrip("。.！!~")
-    return t in CONFIRM_WORDS or t == ""
+    # 去掉 [userid]: 前缀
+    if "]: " in t:
+        t = t.split("]: ", 1)[1].strip()
+    confirm_words = {"确认", "ok", "pass", "yes", "通过", "没问题", "可以", "行",
+                     "好", "好的", "同意", "lgtm", "没意见", "确定", "下一步",
+                     "继续", "proceed", "approve", "approved"}
+    if t in confirm_words:
+        return True
+    # 模糊匹配：包含确认类词汇且不包含否定词
+    confirm_phrases = ["没问题", "可以了", "没意见", "同意", "确认", "通过", "下一步"]
+    deny_phrases = ["不行", "不可以", "不同意", "修改", "改一下", "有问题", "不对"]
+    has_confirm = any(p in t for p in confirm_phrases)
+    has_deny = any(p in t for p in deny_phrases)
+    return has_confirm and not has_deny
 
 
 CONFIRM_HINT = "\n\n💡 回复「确认」继续下一步，或提出修改意见。"
 
 
 async def pm_confirm(state: SOPState) -> dict:
-    """Phase 1c: 用户确认需求文档"""
     user = state.get("human_input", "").strip()
-    if not user:
-        return {"phase": "api_design", "human_input": ""}
-    intent = await _classify_intent(user)
-    if intent == "CONFIRM":
+    if not user or _is_confirm(user):
         return {"phase": "api_design", "human_input": ""}
     return {"phase": "pm_ask", "human_input": user}
 
@@ -238,12 +231,10 @@ def arch_review_route(state: SOPState) -> str:
 
 
 async def human_confirm_arch(state: SOPState) -> dict:
-    """等待用户确认架构"""
     user = state.get("human_input", "").strip()
     if not user:
         return {"notify": f"🏗️ 架构审查完成（{state['arch_review_count']}轮）{CONFIRM_HINT}"}
-    intent = await _classify_intent(user)
-    if intent == "CONFIRM":
+    if _is_confirm(user):
         return {"phase": "coder", "human_input": "", "notify": "👍 架构已确认，开始编码"}
     return {"review_feedback": user, "phase": "architect", "human_input": ""}
 
@@ -293,8 +284,7 @@ async def human_confirm_code(state: SOPState) -> dict:
     user = state.get("human_input", "").strip()
     if not user:
         return {"notify": f"🔍 代码审查完成（{state['code_review_count']}轮）{CONFIRM_HINT}"}
-    intent = await _classify_intent(user)
-    if intent == "CONFIRM":
+    if _is_confirm(user):
         return {"phase": "deliver", "human_input": "", "notify": "👍 代码已确认，开始交付"}
     return {"review_feedback": user, "phase": "coder", "human_input": ""}
 
