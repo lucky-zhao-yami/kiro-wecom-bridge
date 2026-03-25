@@ -224,7 +224,7 @@ class Channel:
                     await self.ws.send_msg(chatid, chat_type, result[:1500])
             elif agent_mode == "sop":
                 heartbeat.cancel()
-                await self.ws.send_stream(req_id, stream_id, "🚀 SOP 流程处理中...", finish=True)
+                await self.ws.send_stream(req_id, stream_id, "", finish=True)
                 session = await self._get_sop(chatid, chat_cfg)
                 if session.started:
                     # 已启动过（可能在 interrupt 暂停中），恢复
