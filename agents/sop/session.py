@@ -19,6 +19,7 @@ import asyncio, json, logging, os, re, time
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from agents.process import KiroProcess
 
 log = logging.getLogger("agents.sop")
@@ -343,6 +344,9 @@ def build_sop_graph() -> StateGraph:
     return g
 
 
+SOP_DB_DIR = os.path.join(WORK_DIR, "wecom-sessions", "_sop")
+
+
 class SOPSession:
     """SOP 会话"""
 
@@ -350,19 +354,28 @@ class SOPSession:
         self._chatid = chatid
         self._ws = ws
         self._config = chat_config
-        self._checkpointer = MemorySaver()
-        self._graph = build_sop_graph().compile(
-            checkpointer=self._checkpointer,
-            interrupt_before=["pm_wait", "pm_confirm",
-                              "human_confirm_arch", "human_confirm_code"]
-        )
+        self._graph = None
+        self._checkpointer = None
         self._thread_id = chatid
         self._running = False
         self._started = False
         self._task: asyncio.Task | None = None
 
+    async def _ensure_graph(self):
+        if self._graph is None:
+            os.makedirs(SOP_DB_DIR, exist_ok=True)
+            db_path = os.path.join(SOP_DB_DIR, f"{self._chatid}.db")
+            self._checkpointer = AsyncSqliteSaver.from_conn_string(db_path)
+            await self._checkpointer.setup()
+            self._graph = build_sop_graph().compile(
+                checkpointer=self._checkpointer,
+                interrupt_before=["pm_wait", "pm_confirm",
+                                  "human_confirm_arch", "human_confirm_code"]
+            )
+
     async def start(self, task_id: str, services: list[str], initial_request: str):
         """启动 SOP（后台）"""
+        await self._ensure_graph()
         self._started = True
         state = self._make_state(task_id, services, initial_request)
         config = {"configurable": {"thread_id": self._thread_id}}
@@ -370,6 +383,7 @@ class SOPSession:
 
     async def start_and_wait(self, task_id: str, services: list[str], initial_request: str) -> str:
         """启动 SOP 并等待第一个 interrupt，返回 notify 消息"""
+        await self._ensure_graph()
         self._started = True
         state = self._make_state(task_id, services, initial_request)
         config = {"configurable": {"thread_id": self._thread_id}}
@@ -377,12 +391,14 @@ class SOPSession:
 
     async def resume(self, human_input: str):
         """恢复（后台）"""
+        await self._ensure_graph()
         config = {"configurable": {"thread_id": self._thread_id}}
         self._graph.update_state(config, {"human_input": human_input})
         self._task = asyncio.create_task(self._run(None, config))
 
     async def resume_and_wait(self, human_input: str) -> str:
         """恢复并等待下一个 interrupt，返回 notify 消息"""
+        await self._ensure_graph()
         config = {"configurable": {"thread_id": self._thread_id}}
         self._graph.update_state(config, {"human_input": human_input})
         return await self._run_and_get_notify(None, config)
