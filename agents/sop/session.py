@@ -15,7 +15,7 @@
                                        deliver
 """
 
-import asyncio, json, logging, os, re, time
+import asyncio, aiosqlite, json, logging, os, re, time
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -365,7 +365,8 @@ class SOPSession:
         if self._graph is None:
             os.makedirs(SOP_DB_DIR, exist_ok=True)
             db_path = os.path.join(SOP_DB_DIR, f"{self._chatid}.db")
-            self._checkpointer = AsyncSqliteSaver.from_conn_string(db_path)
+            conn = await aiosqlite.connect(db_path)
+            self._checkpointer = AsyncSqliteSaver(conn)
             await self._checkpointer.setup()
             self._graph = build_sop_graph().compile(
                 checkpointer=self._checkpointer,
