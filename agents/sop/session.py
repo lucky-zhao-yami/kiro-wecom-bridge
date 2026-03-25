@@ -28,6 +28,7 @@ AGENT_WORKSPACE_DIR = "/mnt/d/workspace/agent-workspaces"
 
 AGENT_CWD_MAP = {
     "orchestrator-agent": os.path.join(AGENT_WORKSPACE_DIR, "pm"),
+    "pm-agent": os.path.join(AGENT_WORKSPACE_DIR, "pm"),
     "api-designer-agent": os.path.join(AGENT_WORKSPACE_DIR, "architect"),
     "architect-agent": os.path.join(AGENT_WORKSPACE_DIR, "architect"),
     "coder-agent": os.path.join(AGENT_WORKSPACE_DIR, "coder"),
@@ -119,7 +120,7 @@ async def pm_ask(state: SOPState) -> dict:
             f"充分则在回复开头写 [INFO_SUFFICIENT]，然后直接生成需求文档。"
         )
 
-    result = await _run_agent(state, "orchestrator-agent", prompt)
+    result = await _run_agent(state, "pm-agent", prompt)
 
     if "[INFO_SUFFICIENT]" in result:
         doc = result.replace("[INFO_SUFFICIENT]", "").strip()
