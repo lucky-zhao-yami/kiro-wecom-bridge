@@ -68,12 +68,9 @@ async def _run_agent(state: SOPState, agent_name: str, prompt: str) -> str:
     proc = KiroProcess(
         f"{chatid}/sop/{agent_name}", session_dir,
         agent=agent_name, cwd=state["cwd"], mode=state["mode"])
-    try:
-        await proc.start()
-        result = await proc.send(prompt, timeout=600)
-        return result or ""
-    finally:
-        await proc.close()
+    await proc.start()
+    result = await proc.send(prompt, timeout=600)
+    return result or ""
 
 
 # ── 节点函数 ──
@@ -353,9 +350,9 @@ class SOPSession:
         chat_type = 1 if self._chatid.startswith("dm_") else 2
         try:
             if state:
-                result = await asyncio.to_thread(self._graph.invoke, state, config)
+                result = await self._graph.ainvoke(state, config)
             else:
-                result = await asyncio.to_thread(self._graph.invoke, None, config)
+                result = await self._graph.ainvoke(None, config)
 
             # 推送消息
             for msg in (result or {}).get("messages", []):
