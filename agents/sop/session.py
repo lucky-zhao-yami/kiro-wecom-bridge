@@ -59,14 +59,22 @@ def _ensure_dirs(task_id: str):
         os.makedirs(os.path.join(base, sub), exist_ok=True)
 
 
+# 全局进程缓存，key = (task_id, agent_name)
+_agent_procs: dict[tuple[str, str], KiroProcess] = {}
+
+
 async def _run_agent(state: SOPState, agent_name: str, prompt: str) -> str:
-    """启动 KiroProcess 执行任务"""
-    session_dir = os.path.join(_task_dir(state["task_id"]), "agents", agent_name)
-    os.makedirs(session_dir, exist_ok=True)
-    proc = KiroProcess(
-        f"{state['chatid']}/sop/{agent_name}", session_dir,
-        agent=agent_name, cwd=state["cwd"], mode=state["mode"])
-    await proc.start()
+    """复用 KiroProcess — 同一 task 同一 agent 共享进程和上下文"""
+    key = (state["task_id"], agent_name)
+    proc = _agent_procs.get(key)
+    if not proc or not proc.alive:
+        session_dir = os.path.join(_task_dir(state["task_id"]), "agents", agent_name)
+        os.makedirs(session_dir, exist_ok=True)
+        proc = KiroProcess(
+            f"{state['chatid']}/sop/{agent_name}", session_dir,
+            agent=agent_name, cwd=state["cwd"], mode=state["mode"])
+        await proc.start()
+        _agent_procs[key] = proc
     return await proc.send(prompt, timeout=600) or ""
 
 
