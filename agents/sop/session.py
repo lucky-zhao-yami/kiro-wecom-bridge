@@ -93,7 +93,12 @@ async def _run_agent(state: SOPState, agent_name: str, prompt: str) -> str:
         await proc.start()
         _agent_procs[key] = proc
         log.info("SOP 新建进程 agent=%s cwd=%s", agent_name, cwd)
-    return await proc.send(prompt, timeout=600) or ""
+    try:
+        return await proc.send(prompt, timeout=600) or ""
+    except Exception as e:
+        log.error("SOP agent 异常 agent=%s: %s", agent_name, e)
+        _agent_procs.pop(key, None)  # 清掉坏进程，下次重建
+        return f"[Agent {agent_name} 执行异常: {e}]"
 
 
 # ── 节点 ──

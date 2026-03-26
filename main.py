@@ -85,8 +85,15 @@ async def _daily_memory_loop():
 
 
 @asynccontextmanager
+def _handle_exception(loop, context):
+    """全局异常处理 — 防止未捕获的 Future 异常崩掉主进程"""
+    msg = context.get("exception", context.get("message", "unknown"))
+    log.error("未捕获的异步异常: %s", msg)
+
+
 async def lifespan(app: FastAPI):
     log.info("kiro-wecom-bridge 启动")
+    asyncio.get_event_loop().set_exception_handler(_handle_exception)
     cm.load(CHANNELS_PATH)
     ws_tasks = await cm.start_all()
     cleanup_task = asyncio.create_task(_cleanup_loop())
