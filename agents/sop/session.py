@@ -35,6 +35,7 @@ AGENT_CWD_MAP = {
     "coder-agent": os.path.join(AGENT_WORKSPACE_DIR, "coder"),
     "reviewer-agent": os.path.join(AGENT_WORKSPACE_DIR, "reviewer"),
     "doc-engineer-agent": os.path.join(AGENT_WORKSPACE_DIR, "coder"),
+    "qa-agent": os.path.join(AGENT_WORKSPACE_DIR, "coder"),
     "groupchat-manager": os.path.join(AGENT_WORKSPACE_DIR, "manager"),
     "classifier-agent": os.path.join(AGENT_WORKSPACE_DIR, "classifier"),
 }
@@ -286,10 +287,21 @@ async def code_review_node(state: SOPState) -> dict:
 
 def code_review_route(state: SOPState) -> str:
     if state["review_result"] == "PASS":
-        return "human_confirm_code"
+        return "qa"
     if state["code_review_count"] >= 10:
-        return "human_confirm_code"
+        return "qa"
     return "coder"
+
+
+async def qa_node(state: SOPState) -> dict:
+    """Phase 3.5: QA 写测试"""
+    result = await _run_agent(state, "qa-agent", (
+        f"任务: {state['task_id']}\n需求:\n{state['requirements']}\n\n"
+        f"API 契约:\n{state['api_contract']}\n\n架构规范:\n{state['architecture']}\n\n"
+        f"代码变更:\n{state['code_diff']}\n\n"
+        f"请编写测试用例并运行测试。"
+    ))
+    return {"notify": f"✅ Phase 3.5: QA 测试完成", "code_diff": state["code_diff"] + "\n\n[QA]\n" + result}
 
 
 async def human_confirm_code(state: SOPState) -> dict:
@@ -327,6 +339,7 @@ def build_sop_graph() -> StateGraph:
     g.add_node("human_confirm_arch", human_confirm_arch)
     g.add_node("coder", coder_node)
     g.add_node("code_review", code_review_node)
+    g.add_node("qa", qa_node)
     g.add_node("human_confirm_code", human_confirm_code)
     g.add_node("deliver", deliver_node)
 
@@ -343,6 +356,7 @@ def build_sop_graph() -> StateGraph:
     g.add_conditional_edges("human_confirm_arch", lambda s: s.get("phase", "coder"))
     g.add_edge("coder", "code_review")
     g.add_conditional_edges("code_review", code_review_route)
+    g.add_edge("qa", "human_confirm_code")
     g.add_conditional_edges("human_confirm_code", lambda s: s.get("phase", "deliver"))
     g.add_edge("deliver", END)
 
