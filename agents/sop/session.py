@@ -432,8 +432,10 @@ class SOPSession:
                 stream = self._graph.astream(None, config, stream_mode="values")
             async for step in stream:
                 notify = (step.get("notify") or "").strip()
-                if notify and notify != last_notify:
-                    last_notify = notify
+                # 用前50字符去重，避免截断差异导致重复推送
+                notify_key = notify[:50]
+                if notify and notify_key != last_notify:
+                    last_notify = notify_key
                     log.info("SOP notify chatid=%s: %s", self._chatid, notify[:100])
                     await self._ws.send_msg(self._chatid, chat_type, notify[:2000])
             return ""  # 中间 notify 已推送，不需要返回
