@@ -237,6 +237,8 @@ class Channel:
                     # 分段推送，企微单条消息限制
                     for i in range(0, len(result), 2000):
                         await self.ws.send_msg(chatid, chat_type, result[i:i+2000])
+                        if i + 2000 < len(result):
+                            await asyncio.sleep(1)  # 防企微频率限制
             else:
                 heartbeat.cancel()
                 await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)
