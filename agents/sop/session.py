@@ -229,7 +229,7 @@ async def arch_review_node(state: SOPState) -> dict:
 def arch_review_route(state: SOPState) -> str:
     if state["review_result"] == "PASS":
         return "human_confirm_arch"
-    if state["arch_review_count"] >= 3:
+    if state["arch_review_count"] >= 10:
         return "human_confirm_arch"
     return "architect"
 
@@ -282,7 +282,7 @@ async def code_review_node(state: SOPState) -> dict:
 def code_review_route(state: SOPState) -> str:
     if state["review_result"] == "PASS":
         return "human_confirm_code"
-    if state["code_review_count"] >= 6:
+    if state["code_review_count"] >= 10:
         return "human_confirm_code"
     return "coder"
 
