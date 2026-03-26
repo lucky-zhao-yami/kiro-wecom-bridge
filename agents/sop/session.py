@@ -394,14 +394,14 @@ class SOPSession:
         """恢复（后台）"""
         await self._ensure_graph()
         config = {"configurable": {"thread_id": self._thread_id}}
-        self._graph.update_state(config, {"human_input": human_input})
+        await self._graph.aupdate_state(config, {"human_input": human_input})
         self._task = asyncio.create_task(self._run(None, config))
 
     async def resume_and_wait(self, human_input: str) -> str:
         """恢复并等待下一个 interrupt，返回 notify 消息"""
         await self._ensure_graph()
         config = {"configurable": {"thread_id": self._thread_id}}
-        self._graph.update_state(config, {"human_input": human_input})
+        await self._graph.aupdate_state(config, {"human_input": human_input})
         return await self._run_and_get_notify(None, config)
 
     def _make_state(self, task_id, services, initial_request):
