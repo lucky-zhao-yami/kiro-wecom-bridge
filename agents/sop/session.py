@@ -416,14 +416,21 @@ class SOPSession:
         )
 
     async def _run_and_get_notify(self, state, config) -> str:
-        """执行图直到 interrupt，返回 notify"""
+        """执行图直到 interrupt，逐步推送中间 notify"""
         self._running = True
+        chat_type = 1 if self._chatid.startswith("dm_") else 2
+        last_notify = ""
         try:
             if state:
-                result = await self._graph.ainvoke(state, config)
+                stream = self._graph.astream(state, config, stream_mode="values")
             else:
-                result = await self._graph.ainvoke(None, config)
-            return (result or {}).get("notify", "")
+                stream = self._graph.astream(None, config, stream_mode="values")
+            async for step in stream:
+                notify = step.get("notify", "")
+                if notify and notify != last_notify:
+                    last_notify = notify
+                    await self._ws.send_msg(self._chatid, chat_type, notify[:2000])
+            return ""  # 中间 notify 已推送，不需要返回
         except Exception as e:
             log.error("SOP 异常 chatid=%s: %s", self._chatid, e)
             return f"❌ SOP 异常: {e}"

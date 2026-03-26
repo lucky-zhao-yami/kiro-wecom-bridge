@@ -227,23 +227,14 @@ class Channel:
                 session = await self._get_sop(chatid, chat_cfg)
                 chat_type = 1 if chatid.startswith("dm_") else 2
                 if session.running:
-                    # 正在执行中，不打断，告知用户
                     await self.ws.send_stream(req_id, stream_id, "⏳ SOP 正在执行中，请等待当前步骤完成...", finish=True)
                 elif session.started:
-                    # interrupt 暂停中，恢复
                     await self.ws.send_stream(req_id, stream_id, "🔄 SOP 继续处理中...", finish=True)
-                    result = await session.resume_and_wait(text)
-                    if result:
-                        for i in range(0, len(result), 2000):
-                            await self.ws.send_msg(chatid, chat_type, result[i:i+2000])
+                    await session.resume_and_wait(text)
                 else:
-                    # 首次启动
                     await self.ws.send_stream(req_id, stream_id, "🚀 SOP 流程启动中...", finish=True)
                     task_id = f"TASK-{int(time.time())}"
-                    result = await session.start_and_wait(task_id, [], text)
-                    if result:
-                        for i in range(0, len(result), 2000):
-                            await self.ws.send_msg(chatid, chat_type, result[i:i+2000])
+                    await session.start_and_wait(task_id, [], text)
             else:
                 heartbeat.cancel()
                 await self.ws.send_stream(req_id, stream_id, f"未知的 agent_mode: {agent_mode}", finish=True)
