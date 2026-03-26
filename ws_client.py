@@ -26,6 +26,8 @@ class WsClient:
         self._last_pong: float = 0
         self._auth_failures = 0
         self._send_lock = asyncio.Lock()
+        self._msg_rate_lock = asyncio.Lock()
+        self._last_send_msg: float = 0
         self._media_waiters: dict[str, asyncio.Future] = {}  # req_id → Future[bytes|None]
 
     # ---- 连接生命周期 ----
@@ -186,17 +188,21 @@ class WsClient:
 
     async def send_msg(self, chatid: str, chat_type: int, content: str):
         """主动推送 aibot_send_msg (markdown)
-        chat_type=1 私聊时 chatid 传 userid（去掉 dm_ 前缀）
-        chat_type=2 群聊时 chatid 直接传
+        统一频率控制：两次推送间隔至少 1s，防止企微 45009
         """
-        actual_id = chatid.removeprefix("dm_") if chat_type == 1 else chatid
-        await self._send_raw({
-            "cmd": "aibot_send_msg",
-            "headers": {"req_id": _req_id()},
-            "body": {
-                "chatid": actual_id,
-                "chat_type": chat_type,
-                "msgtype": "markdown",
-                "markdown": {"content": content},
-            },
-        })
+        async with self._msg_rate_lock:
+            gap = time.monotonic() - self._last_send_msg
+            if gap < 1:
+                await asyncio.sleep(1 - gap)
+            self._last_send_msg = time.monotonic()
+            actual_id = chatid.removeprefix("dm_") if chat_type == 1 else chatid
+            await self._send_raw({
+                "cmd": "aibot_send_msg",
+                "headers": {"req_id": _req_id()},
+                "body": {
+                    "chatid": actual_id,
+                    "chat_type": chat_type,
+                    "msgtype": "markdown",
+                    "markdown": {"content": content},
+                },
+            })
