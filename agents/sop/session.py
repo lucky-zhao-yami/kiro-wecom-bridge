@@ -221,7 +221,7 @@ async def arch_review_node(state: SOPState) -> dict:
     is_pass = "PASS" in result.upper().split("\n")[0]
     status = "PASS ✅" if is_pass else f"REJECT ❌ (第{count}轮)"
     notify = f"🔍 架构审查: {status}"
-    if is_pass or count >= 3:
+    if is_pass or count >= 10:
         notify += CONFIRM_HINT
     return {
         "arch_review_count": count,
@@ -274,7 +274,7 @@ async def code_review_node(state: SOPState) -> dict:
     is_pass = "PASS" in result.upper().split("\n")[0]
     status = "PASS ✅" if is_pass else f"REJECT ❌ (第{count}轮)"
     notify = f"🔍 代码审查: {status}"
-    if is_pass or count >= 6:
+    if is_pass or count >= 10:
         notify += CONFIRM_HINT
     return {
         "code_review_count": count,
