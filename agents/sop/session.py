@@ -315,14 +315,28 @@ async def human_confirm_code(state: SOPState) -> dict:
 
 async def deliver_node(state: SOPState) -> dict:
     """Phase 4: 交付"""
+    task_dir = _task_dir(state["task_id"])
     result = await _run_agent(state, "doc-engineer-agent", (
         f"任务: {state['task_id']}\n请生成接口文档和测试发布文档。\n"
-        f"产出目录: {_task_dir(state['task_id'])}"
+        f"产出目录: {task_dir}"
     ))
-    doc_path = os.path.join(_task_dir(state["task_id"]), "06_deliverables", "summary.md")
+    doc_path = os.path.join(task_dir, "06_deliverables", "summary.md")
     with open(doc_path, "w") as f:
         f.write(result)
-    return {"phase": "done", "notify": f"🎉 任务 {state['task_id']} 开发完成！\n产出: {_task_dir(state['task_id'])}"}
+
+    # 汇总所有产物
+    summary = (
+        f"🎉 任务 {state['task_id']} 开发完成！\n\n"
+        f"📁 产出目录: {task_dir}\n"
+        f"📋 需求文档: {task_dir}/01_pm_docs/requirements.md\n"
+        f"📐 API 契约: {task_dir}/02_api_contracts/api.yaml\n"
+        f"🏗️ 架构规范: {task_dir}/03_architecture/arch.md\n"
+        f"🔍 审查日志: {task_dir}/04_review_logs/\n"
+        f"📄 交付文档: {task_dir}/06_deliverables/summary.md\n\n"
+        f"📊 统计: 架构审查 {state.get('arch_review_count', 0)} 轮, "
+        f"代码审查 {state.get('code_review_count', 0)} 轮"
+    )
+    return {"phase": "done", "notify": summary}
 
 
 # ── 构建图 ──
