@@ -426,9 +426,10 @@ class SOPSession:
             else:
                 stream = self._graph.astream(None, config, stream_mode="values")
             async for step in stream:
-                notify = step.get("notify", "")
+                notify = (step.get("notify") or "").strip()
                 if notify and notify != last_notify:
                     last_notify = notify
+                    log.info("SOP notify chatid=%s: %s", self._chatid, notify[:100])
                     await self._ws.send_msg(self._chatid, chat_type, notify[:2000])
             return ""  # 中间 notify 已推送，不需要返回
         except Exception as e:
