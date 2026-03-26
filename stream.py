@@ -3,7 +3,7 @@ import asyncio, uuid
 
 
 STREAM_SEGMENT_LIMIT = 1500
-FLUSH_INTERVAL = 0.3
+FLUSH_INTERVAL = 1.0
 
 
 class StreamSegmenter:
