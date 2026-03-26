@@ -192,8 +192,8 @@ class WsClient:
         """
         async with self._msg_rate_lock:
             gap = time.monotonic() - self._last_send_msg
-            if gap < 1:
-                await asyncio.sleep(1 - gap)
+            if gap < 2:
+                await asyncio.sleep(2 - gap)
             self._last_send_msg = time.monotonic()
             actual_id = chatid.removeprefix("dm_") if chat_type == 1 else chatid
             await self._send_raw({

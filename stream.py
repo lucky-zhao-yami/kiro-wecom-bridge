@@ -3,7 +3,7 @@ import asyncio, uuid
 
 
 STREAM_SEGMENT_LIMIT = 1500
-FLUSH_INTERVAL = 1.0
+FLUSH_INTERVAL = 2.0  # 企微限制 30条/分钟，2s 间隔 = 最多 30 次
 
 
 class StreamSegmenter:
