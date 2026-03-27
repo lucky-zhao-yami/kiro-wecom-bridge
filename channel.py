@@ -234,12 +234,11 @@ class Channel:
     # ---- 事件回调 ----
 
     async def _try_pipeline_route(self, chatid: str, text: str) -> str | None:
-        """尝试将消息路由到 Pipeline Scheduler"""
-        import httpx
+        """尝试将消息路由到 Pipeline Scheduler（仅快捷指令）"""
+        import re, httpx
         # 提取纯文本（去掉 [userid]: 前缀）
-        raw = text
-        if "]: " in text:
-            raw = text.split("]: ", 1)[1]
+        m = re.match(r'^\[.+?\](?:\(引用:.*?\))?: (.+)$', text, re.DOTALL)
+        raw = m.group(1) if m else text
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.post("http://127.0.0.1:18901/route", json={
