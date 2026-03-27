@@ -225,16 +225,17 @@ class KiroProcess:
 
         self._interrupted = False
 
-        # 第一条消息时注入安全规则 + 历史文件路径
+        # 第一条消息时注入安全规则 + 最近对话历史
         actual_text = text
         if self._first_msg:
             self._first_msg = False
             from guard import get_preamble
             preamble = get_preamble(self._mode)
-            history_path = _history_path(self._session_dir)
+            # 直接注入最近 5 轮历史，不依赖 agent 自己读文件
+            history = _load_history(self._session_dir, max_turns=5)
             history_hint = ""
-            if os.path.isfile(history_path):
-                history_hint = f"\n[今日对话历史: {history_path}]\n如需回顾之前的对话上下文，请用 fs_read 读取此文件。\n"
+            if history:
+                history_hint = "\n[最近对话历史]\n" + _format_history(history) + "\n[历史结束]\n"
             actual_text = f"{preamble}{history_hint}[chatid={self._chatid}]\n{text}"
 
         prompt = [{"type": "text", "text": actual_text}]
@@ -266,10 +267,10 @@ class KiroProcess:
             self._first_msg = False
             from guard import get_preamble
             preamble = get_preamble(self._mode)
-            history_path = _history_path(self._session_dir)
+            history = _load_history(self._session_dir, max_turns=5)
             history_hint = ""
-            if os.path.isfile(history_path):
-                history_hint = f"\n[今日对话历史: {history_path}]\n如需回顾之前的对话上下文，请用 fs_read 读取此文件。\n"
+            if history:
+                history_hint = "\n[最近对话历史]\n" + _format_history(history) + "\n[历史结束]\n"
             prefix = f"{preamble}{history_hint}"
             for item in content:
                 if item.get("type") == "text":
