@@ -178,8 +178,8 @@ class Channel:
         seg = StreamSegmenter(self.ws, req_id, stream_id)
 
         try:
-            # Pipeline 路由：优先检查是否是 pipeline 指令
-            if agent_mode in ("sop", "full"):
+            # Pipeline 路由：仅在 pipeline 专用 chatid 上匹配快捷指令
+            if chat_cfg.get("pipeline"):
                 pipeline_reply = await self._try_pipeline_route(chatid, text)
                 if pipeline_reply:
                     await self.ws.send_stream(req_id, stream_id, pipeline_reply, finish=True)
