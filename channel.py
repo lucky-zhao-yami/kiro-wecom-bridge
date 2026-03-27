@@ -178,6 +178,13 @@ class Channel:
         seg = StreamSegmenter(self.ws, req_id, stream_id)
 
         try:
+            # Pipeline 路由：优先检查是否是 pipeline 指令
+            if agent_mode in ("sop", "full"):
+                pipeline_reply = await self._try_pipeline_route(chatid, text)
+                if pipeline_reply:
+                    await self.ws.send_stream(req_id, stream_id, pipeline_reply, finish=True)
+                    return
+
             await self.ws.send_stream(req_id, stream_id, "🤔", finish=False)
 
             if agent_mode == "single":
@@ -225,6 +232,26 @@ class Channel:
             await self.ws.send_stream(req_id, stream_id, f"❌ 处理异常: {e}", finish=True)
 
     # ---- 事件回调 ----
+
+    async def _try_pipeline_route(self, chatid: str, text: str) -> str | None:
+        """尝试将消息路由到 Pipeline Scheduler"""
+        import httpx
+        # 提取纯文本（去掉 [userid]: 前缀）
+        raw = text
+        if "]: " in text:
+            raw = text.split("]: ", 1)[1]
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post("http://127.0.0.1:18901/route", json={
+                    "chatid": chatid, "message": raw,
+                })
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("routed"):
+                        return data["reply"]
+        except Exception:
+            pass  # Scheduler 不可用时静默降级
+        return None
 
     async def _get_delegate(self, chatid: str, chat_cfg: dict) -> DelegateSession:
         if chatid not in self._delegates:
